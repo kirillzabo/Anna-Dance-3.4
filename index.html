@@ -1,0 +1,4246 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <meta name="theme-color" content="#f8fafc">
+  <title>Dance Planner</title>
+
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      darkMode: 'class'
+    }
+  </script>
+
+  <script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
+
+  <link
+    rel="stylesheet"
+    href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.2/css/all.min.css"
+  >
+
+  <style>
+    * {
+      -webkit-tap-highlight-color: transparent;
+    }
+
+    html {
+      background: #f8fafc;
+    }
+
+    html.dark {
+      background: #020617;
+    }
+
+    body {
+      margin: 0;
+      font-family:
+        -apple-system,
+        BlinkMacSystemFont,
+        "Segoe UI",
+        Roboto,
+        Helvetica,
+        Arial,
+        sans-serif;
+      background: #f8fafc;
+      color: #0f172a;
+    }
+
+    html.dark body {
+      background: #020617;
+      color: #f8fafc;
+    }
+
+    button,
+    input,
+    select,
+    textarea {
+      font: inherit;
+    }
+
+    input[type="date"]::-webkit-calendar-picker-indicator {
+      opacity: 0.6;
+    }
+
+    .safe-bottom {
+      padding-bottom: env(safe-area-inset-bottom);
+    }
+
+    .hide-scrollbar::-webkit-scrollbar {
+      display: none;
+    }
+
+    .hide-scrollbar {
+      scrollbar-width: none;
+    }
+
+    .fade-enter-active,
+    .fade-leave-active {
+      transition: opacity .18s ease;
+    }
+
+    .fade-enter-from,
+    .fade-leave-to {
+      opacity: 0;
+    }
+
+    .modal-enter-active,
+    .modal-leave-active {
+      transition: all .18s ease;
+    }
+
+    .modal-enter-from,
+    .modal-leave-to {
+      opacity: 0;
+      transform: translateY(10px);
+    }
+  </style>
+</head>
+
+<body>
+<div id="app"></div>
+
+<script>
+const { createApp, ref, reactive, computed, watch, onMounted, onBeforeUnmount } = Vue;
+
+const STORAGE = {
+  currency: 'dp_currency_v2',
+  schools: 'dp_schools_v2',
+  groups: 'dp_groups_v2',
+  lessons: 'dp_lessons_v2',
+  types: 'dp_types_v2',
+  directions: 'dp_directions_v2',
+  theme: 'dp_theme_v2',
+  reminder: 'dp_reminder_v2',
+  notified: 'dp_notified_v2'
+};
+
+const DEFAULT_TYPES = [
+  {
+    id: 'individual',
+    name: 'Индив',
+    mode: 'fixed',
+    amount: 400,
+    minPayment: 0,
+    ranges: []
+  },
+  {
+    id: 'group',
+    name: 'Группа',
+    mode: 'fixed',
+    amount: 600,
+    minPayment: 0,
+    ranges: []
+  },
+  {
+    id: 'substitution',
+    name: 'Замена',
+    mode: 'fixed',
+    amount: 600,
+    minPayment: 0,
+    ranges: []
+  },
+  {
+    id: 'rehearsal',
+    name: 'Репетиция',
+    mode: 'fixed',
+    amount: 600,
+    minPayment: 0,
+    ranges: []
+  },
+  {
+    id: 'other',
+    name: 'Другое',
+    mode: 'manual',
+    amount: 0,
+    minPayment: 0,
+    ranges: []
+  }
+];
+
+function uid(prefix = 'id') {
+  return prefix + '_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8);
+}
+
+function loadJSON(key, fallback) {
+  try {
+    const raw = localStorage.getItem(key);
+    if (!raw) return fallback;
+    const parsed = JSON.parse(raw);
+    return parsed ?? fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+function saveJSON(key, value) {
+  localStorage.setItem(key, JSON.stringify(value));
+}
+
+function normalizeTypes(rawTypes) {
+  const source = Array.isArray(rawTypes) && rawTypes.length
+    ? rawTypes
+    : clone(DEFAULT_TYPES);
+
+  return source.map(type => {
+    const normalized = { ...type };
+
+    if (normalized.id === 'individual' ||
+        String(normalized.name || '').trim().toLowerCase().includes('индив')) {
+      normalized.id = 'individual';
+      normalized.name = 'Индив';
+    }
+
+    return normalized;
+  });
+}
+
+function pad(n) {
+  return String(n).padStart(2, '0');
+}
+
+function dateToISO(date) {
+  return [
+    date.getFullYear(),
+    pad(date.getMonth() + 1),
+    pad(date.getDate())
+  ].join('-');
+}
+
+function todayISO() {
+  return dateToISO(new Date());
+}
+
+function parseISO(iso) {
+  const [y, m, d] = iso.split('-').map(Number);
+  return new Date(y, m - 1, d);
+}
+
+function addDays(iso, amount) {
+  const d = parseISO(iso);
+  d.setDate(d.getDate() + amount);
+  return dateToISO(d);
+}
+
+function startOfWeek(iso) {
+  const d = parseISO(iso);
+  const day = d.getDay();
+  const diff = day === 0 ? -6 : 1 - day;
+  d.setDate(d.getDate() + diff);
+  return dateToISO(d);
+}
+
+function endOfWeek(iso) {
+  return addDays(startOfWeek(iso), 6);
+}
+
+function startOfMonth(iso) {
+  const d = parseISO(iso);
+  return dateToISO(new Date(d.getFullYear(), d.getMonth(), 1));
+}
+
+function endOfMonth(iso) {
+  const d = parseISO(iso);
+  return dateToISO(new Date(d.getFullYear(), d.getMonth() + 1, 0));
+}
+
+function formatDate(iso, options = {}) {
+  if (!iso) return '';
+
+  return parseISO(iso).toLocaleDateString('ru-RU', {
+    day: 'numeric',
+    month: 'long',
+    ...options
+  });
+}
+
+function shortDate(iso) {
+  return parseISO(iso).toLocaleDateString('ru-RU', {
+    day: '2-digit',
+    month: '2-digit'
+  });
+}
+
+function weekdayShort(iso) {
+  return parseISO(iso).toLocaleDateString('ru-RU', {
+    weekday: 'short'
+  });
+}
+
+function monthYear(iso) {
+  return parseISO(iso).toLocaleDateString('ru-RU', {
+    month: 'long',
+    year: 'numeric'
+  });
+}
+
+function minutesBetween(start, end) {
+  if (!start || !end) return 0;
+
+  const [sh, sm] = start.split(':').map(Number);
+  const [eh, em] = end.split(':').map(Number);
+
+  let result = (eh * 60 + em) - (sh * 60 + sm);
+
+  if (result < 0) {
+    result += 24 * 60;
+  }
+
+  return result;
+}
+
+function formatHours(minutes) {
+  const hours = minutes / 60;
+
+  if (Number.isInteger(hours)) {
+    return `${hours} ч`;
+  }
+
+  return `${hours.toFixed(1).replace('.', ',')} ч`;
+}
+
+function normalizeLesson(lesson) {
+  return {
+    id: lesson.id || uid('lesson'),
+    date: lesson.date || todayISO(),
+    start: lesson.start || '10:00',
+    end: lesson.end || '11:00',
+    type: lesson.type || 'group',
+    otherText: lesson.otherText || '',
+    studentName: lesson.studentName || '',
+    directionId: lesson.directionId || '',
+    schoolId: lesson.schoolId || '',
+    groupId: lesson.groupId || '',
+    people: Number(lesson.people ?? 1),
+    payment: Number(lesson.payment ?? 0),
+    paymentManual: Boolean(lesson.paymentManual),
+    status: lesson.status || 'planned',
+    note: lesson.note || '',
+    createdAt: lesson.createdAt || Date.now()
+  };
+}
+
+function clone(obj) {
+  return JSON.parse(JSON.stringify(obj));
+}
+
+const FormField = {
+  props: {
+    label: String
+  },
+  template: `
+    <div>
+      <label
+        v-if="label"
+        class="block text-xs font-medium text-slate-500 dark:text-slate-400 mb-1.5"
+      >
+        {{ label }}
+      </label>
+      <slot></slot>
+    </div>
+  `
+};
+
+const SettingsSection = {
+  props: {
+    title: String,
+    icon: String
+  },
+  template: `
+    <section
+      class="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 overflow-hidden"
+    >
+      <div
+        v-if="title"
+        class="px-4 py-3 border-b border-slate-100 dark:border-slate-800 flex items-center gap-2"
+      >
+        <i v-if="icon" :class="icon" class="text-slate-500"></i>
+        <h3 class="font-semibold text-sm">{{ title }}</h3>
+      </div>
+
+      <div class="p-4">
+        <slot></slot>
+      </div>
+    </section>
+  `
+};
+
+const StatCard = {
+  props: {
+    label: String,
+    value: [String, Number],
+    icon: String
+  },
+  template: `
+    <div
+      class="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 p-3"
+    >
+      <div class="flex items-center justify-between gap-2">
+        <span class="text-xs text-slate-500 dark:text-slate-400">{{ label }}</span>
+        <i v-if="icon" :class="icon" class="text-slate-400 text-xs"></i>
+      </div>
+      <div class="mt-1 text-lg font-bold">{{ value }}</div>
+    </div>
+  `
+};
+
+const PaymentEditor = {
+  props: {
+    modelValue: Number,
+    calculated: Number,
+    manual: Boolean,
+    currency: String
+  },
+  emits: ['update:modelValue', 'update:manual'],
+  methods: {
+    onInput(event) {
+      this.$emit('update:modelValue', Number(event.target.value) || 0);
+      this.$emit('update:manual', true);
+    }
+  },
+  template: `
+    <div>
+      <div class="flex items-center justify-between mb-1.5">
+        <label class="block text-xs font-medium text-slate-500 dark:text-slate-400">
+          Оплата
+        </label>
+
+        <button
+          v-if="manual"
+          type="button"
+          @click="$emit('update:manual', false)"
+          class="text-[11px] text-blue-600 dark:text-blue-400"
+        >
+          Авто
+        </button>
+
+        <span
+          v-else
+          class="text-[11px] text-emerald-600 dark:text-emerald-400"
+        >
+          Автоматически
+        </span>
+      </div>
+
+      <div class="relative">
+        <input
+          type="number"
+          min="0"
+          step="1"
+          :value="modelValue"
+          @input="onInput"
+          class="w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-950 px-3 py-2.5 pr-16 outline-none focus:ring-2 focus:ring-blue-500"
+        >
+
+        <span
+          class="absolute right-3 top-1/2 -translate-y-1/2 text-xs text-slate-400"
+        >
+          {{ currency }}
+        </span>
+      </div>
+
+      <div
+        v-if="!manual"
+        class="text-[11px] text-slate-400 mt-1"
+      >
+        По настройкам: {{ calculated }} {{ currency }}
+      </div>
+    </div>
+  `
+};
+
+createApp({
+  components: {
+    FormField,
+    SettingsSection,
+    StatCard,
+    PaymentEditor
+  },
+
+  setup() {
+    const view = ref('today');
+
+    const selectedDate = ref(todayISO());
+
+    const calendarMode = ref('week');
+
+    const financeMode = ref('month');
+    const financeFrom = ref('');
+    const financeTo = ref('');
+
+    const schools = ref(loadJSON(STORAGE.schools, []));
+    const groups = ref(loadJSON(STORAGE.groups, []));
+    const lessons = ref(
+      loadJSON(STORAGE.lessons, []).map(normalizeLesson)
+    );
+
+    const types = ref(
+      normalizeTypes(loadJSON(STORAGE.types, clone(DEFAULT_TYPES)))
+    );
+
+    saveJSON(STORAGE.types, types.value);
+
+    const directions = ref(
+      loadJSON(STORAGE.directions, [])
+    );
+
+    const currency = ref(
+      localStorage.getItem(STORAGE.currency) || 'грн'
+    );
+
+    const theme = ref(
+      localStorage.getItem(STORAGE.theme) || 'system'
+    );
+
+    const reminder = ref(
+      localStorage.getItem(STORAGE.reminder) || 'off'
+    );
+
+    const notified = ref(
+      loadJSON(STORAGE.notified, {})
+    );
+
+    const showLessonModal = ref(false);
+    const showSchoolModal = ref(false);
+    const showGroupModal = ref(false);
+    const showTypeModal = ref(false);
+
+    const editingLesson = ref(null);
+
+    const schoolForm = reactive({
+      id: '',
+      name: ''
+    });
+
+    const groupForm = reactive({
+      id: '',
+      name: '',
+      schoolId: '',
+      customRule: null
+    });
+
+    const typeForm = reactive({
+      id: '',
+      name: '',
+      mode: 'fixed',
+      amount: 0,
+      minPayment: 0,
+      ranges: []
+    });
+
+    const lessonForm = reactive({
+      id: '',
+      date: todayISO(),
+      start: '10:00',
+      end: '11:00',
+      type: 'group',
+      otherText: '',
+      studentName: '',
+      directionId: '',
+      schoolId: '',
+      groupId: '',
+      people: 1,
+      payment: 0,
+      paymentManual: false,
+      status: 'planned',
+      note: ''
+    });
+
+    const calendarTitle = computed(() => {
+      if (calendarMode.value === 'month') {
+        return monthYear(selectedDate.value);
+      }
+
+      if (calendarMode.value === 'week') {
+        const start = startOfWeek(selectedDate.value);
+        const end = endOfWeek(selectedDate.value);
+
+        const startDate = parseISO(start);
+        const endDate = parseISO(end);
+
+        if (
+          startDate.getMonth() === endDate.getMonth() &&
+          startDate.getFullYear() === endDate.getFullYear()
+        ) {
+          return `${startDate.getDate()}–${endDate.getDate()} ${startDate.toLocaleDateString('ru-RU', {
+            month: 'long',
+            year: 'numeric'
+          })}`;
+        }
+
+        return `${shortDate(start)}–${shortDate(end)}`;
+      }
+
+      return formatDate(selectedDate.value);
+    });
+
+    const activeSchools = computed(() =>
+      schools.value.filter(s => !s.archived)
+    );
+
+    const activeGroups = computed(() =>
+      groups.value.filter(g => !g.archived)
+    );
+
+    const currentSchoolGroups = computed(() => {
+      if (!lessonForm.schoolId) {
+        return activeGroups.value;
+      }
+
+      return activeGroups.value.filter(
+        g => g.schoolId === lessonForm.schoolId
+      );
+    });
+
+    const selectedSchool = computed(() =>
+      schools.value.find(s => s.id === lessonForm.schoolId) || null
+    );
+
+    const selectedGroup = computed(() =>
+      groups.value.find(g => g.id === lessonForm.groupId) || null
+    );
+
+    const lessonType = computed(() =>
+      types.value.find(t => t.id === lessonForm.type) || null
+    );
+
+    function getSchoolName(id) {
+      return schools.value.find(s => s.id === id)?.name || 'Без школы';
+    }
+
+    function getGroupName(id) {
+      return groups.value.find(g => g.id === id)?.name || 'Без группы';
+    }
+
+    function getTypeName(type) {
+      const found = types.value.find(t => t.id === type);
+      if (type === 'individual') return 'Индив';
+      if (found?.name && found.name.trim().toLowerCase().includes('индив')) return 'Индив';
+      return found?.name || type;
+    }
+
+    function getDirectionName(id) {
+      return directions.value.find(d => d.id === id)?.name || '';
+    }
+
+    function statusLabel(status) {
+      const labels = {
+        planned: 'Запланировано',
+        done: 'Проведено',
+        cancelled: 'Отменено'
+      };
+
+      return labels[status] || status;
+    }
+
+    function statusClass(status) {
+      if (status === 'done') {
+        return 'bg-emerald-50 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-300';
+      }
+
+      if (status === 'cancelled') {
+        return 'bg-red-50 text-red-700 dark:bg-red-950/40 dark:text-red-300';
+      }
+
+      return 'bg-blue-50 text-blue-700 dark:bg-blue-950/40 dark:text-blue-300';
+    }
+
+    function statusActionClass(lesson, action) {
+      if (action === 'done') {
+        return lesson.status === 'done'
+          ? 'bg-emerald-500 text-white ring-2 ring-emerald-200 dark:ring-emerald-900/60 shadow-sm'
+          : 'bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-300';
+      }
+
+      if (action === 'cancelled') {
+        return lesson.status === 'cancelled'
+          ? 'bg-red-500 text-white ring-2 ring-red-200 dark:ring-red-900/60 shadow-sm'
+          : 'bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-300';
+      }
+
+      return 'bg-slate-100 dark:bg-slate-800 text-slate-500';
+    }
+
+    function lessonMinutes(lesson) {
+      return minutesBetween(lesson.start, lesson.end);
+    }
+
+    function lessonHours(lesson) {
+      return lessonMinutes(lesson) / 60;
+    }
+
+    function calculateRule(rule, people) {
+      if (!rule) return 0;
+
+      const count = Math.max(0, Number(people) || 0);
+
+      if (rule.mode === 'manual') {
+        return 0;
+      }
+
+      if (rule.mode === 'fixed') {
+        return Math.max(
+          Number(rule.minPayment || 0),
+          Number(rule.amount || 0)
+        );
+      }
+
+      if (rule.mode === 'per_person') {
+        return Math.max(
+          Number(rule.minPayment || 0),
+          count * Number(rule.amount || 0)
+        );
+      }
+
+      if (rule.mode === 'ranges') {
+        const range = (rule.ranges || [])
+          .find(r => {
+            const min = Number(r.min || 0);
+            const max = r.max === '' || r.max === null || r.max === undefined
+              ? Infinity
+              : Number(r.max);
+
+            return count >= min && count <= max;
+          });
+
+        if (range) {
+          return Math.max(
+            Number(rule.minPayment || 0),
+            Number(range.amount || 0)
+          );
+        }
+
+        return Number(rule.minPayment || 0);
+      }
+
+      return 0;
+    }
+
+    function getCustomRule(group, school) {
+      if (group?.customRule) {
+        return group.customRule;
+      }
+
+      if (school?.customRule) {
+        return school.customRule;
+      }
+
+      return null;
+    }
+
+    function calculatePaymentForForm() {
+      const group = groups.value.find(
+        g => g.id === lessonForm.groupId
+      );
+
+      const school = schools.value.find(
+        s => s.id === lessonForm.schoolId
+      );
+
+      const custom = getCustomRule(group, school);
+
+      if (custom) {
+        return calculateRule(custom, lessonForm.people);
+      }
+
+      const type = types.value.find(
+        t => t.id === lessonForm.type
+      );
+
+      return calculateRule(type, lessonForm.people);
+    }
+
+    const calculatedPayment = computed(() =>
+      calculatePaymentForForm()
+    );
+
+    function updateAutomaticPayment() {
+      if (!lessonForm.paymentManual) {
+        lessonForm.payment = calculatedPayment.value;
+      }
+    }
+
+    watch(
+      () => [
+        lessonForm.type,
+        lessonForm.people,
+        lessonForm.schoolId,
+        lessonForm.groupId
+      ],
+      () => {
+        updateAutomaticPayment();
+      }
+    );
+
+    function resetLessonForm() {
+      Object.assign(lessonForm, {
+        id: '',
+        date: todayISO(),
+        start: '10:00',
+        end: '11:00',
+        type: 'group',
+        otherText: '',
+        studentName: '',
+        directionId: '',
+        schoolId: '',
+        groupId: '',
+        people: 1,
+        payment: 0,
+        paymentManual: false,
+        status: 'planned',
+        note: ''
+      });
+
+      updateAutomaticPayment();
+    }
+
+    function openAddLesson(date = selectedDate.value) {
+      resetLessonForm();
+      lessonForm.date = date;
+      showLessonModal.value = true;
+    }
+
+    function openEditLesson(lesson) {
+      Object.assign(
+        lessonForm,
+        clone(normalizeLesson(lesson))
+      );
+
+      editingLesson.value = lesson.id;
+      showLessonModal.value = true;
+    }
+
+    function closeLessonModal() {
+      showLessonModal.value = false;
+      editingLesson.value = null;
+    }
+
+    function timeToMinutes(time) {
+      const [h, m] = String(time || '00:00').split(':').map(Number);
+      return h * 60 + m;
+    }
+
+    function lessonsOverlap(a, b) {
+      if (a.date !== b.date) return false;
+
+      const aStart = timeToMinutes(a.start);
+      const aEnd = timeToMinutes(a.end);
+      const bStart = timeToMinutes(b.start);
+      const bEnd = timeToMinutes(b.end);
+
+      return aStart < bEnd && bStart < aEnd;
+    }
+
+    function getConflictingLessons(candidate, excludeId = '') {
+      return lessons.value.filter(existing => {
+        if (existing.id === excludeId) return false;
+        if (existing.status === 'cancelled') return false;
+        return lessonsOverlap(candidate, existing);
+      });
+    }
+
+    function conflictText(conflicts) {
+      return conflicts.map(l =>
+        `${l.start}–${l.end} — ${lessonDisplayTitle(l)}`
+      ).join('\n');
+    }
+
+    function saveLesson() {
+      if (!lessonForm.date) {
+        alert('Выбери дату.');
+        return;
+      }
+
+      if (!lessonForm.start || !lessonForm.end) {
+        alert('Укажи время начала и окончания.');
+        return;
+      }
+
+      if (lessonForm.type === 'other' && !lessonForm.otherText.trim()) {
+        alert('Напиши, что именно означает «Другое».');
+        return;
+      }
+
+      const data = normalizeLesson({
+        ...lessonForm,
+        payment: Number(lessonForm.payment) || 0,
+        people: Number(lessonForm.people) || 0
+      });
+
+      const conflicts = getConflictingLessons(
+        data,
+        editingLesson.value || ''
+      );
+
+      if (conflicts.length) {
+        const ok = confirm(
+          `На это время уже есть занятие:\n\n${conflictText(conflicts)}\n\nВсё равно сохранить?`
+        );
+
+        if (!ok) return;
+      }
+
+      if (editingLesson.value) {
+        const index = lessons.value.findIndex(
+          l => l.id === editingLesson.value
+        );
+
+        if (index !== -1) {
+          lessons.value[index] = data;
+        }
+      } else {
+        lessons.value.push(data);
+      }
+
+      saveJSON(STORAGE.lessons, lessons.value);
+
+      closeLessonModal();
+    }
+
+    function deleteLesson(lesson) {
+      if (!confirm('Удалить это занятие?')) {
+        return;
+      }
+
+      lessons.value = lessons.value.filter(
+        l => l.id !== lesson.id
+      );
+
+      saveJSON(STORAGE.lessons, lessons.value);
+    }
+
+    function copyLesson(lesson) {
+      const copy = normalizeLesson({
+        ...clone(lesson),
+        id: '',
+        date: addDays(lesson.date, 7),
+        status: 'planned',
+        createdAt: Date.now()
+      });
+
+      Object.assign(lessonForm, copy);
+      lessonForm.paymentManual = Boolean(lesson.paymentManual);
+      editingLesson.value = null;
+      showLessonModal.value = true;
+
+      if (!lessonForm.paymentManual) {
+        updateAutomaticPayment();
+      }
+    }
+
+    function setLessonStatus(lesson, status) {
+      const found = lessons.value.find(l => l.id === lesson.id);
+
+      if (!found) return;
+
+      found.status = status;
+
+      saveJSON(STORAGE.lessons, lessons.value);
+    }
+
+    function toggleDone(lesson) {
+      setLessonStatus(
+        lesson,
+        lesson.status === 'done' ? 'planned' : 'done'
+      );
+    }
+
+    function cancelLesson(lesson) {
+      setLessonStatus(lesson, 'cancelled');
+    }
+
+    function activeLessonsForDate(date) {
+      return lessons.value
+        .filter(l => l.date === date)
+        .sort((a, b) => a.start.localeCompare(b.start));
+    }
+
+    const todayLessons = computed(() =>
+      activeLessonsForDate(todayISO())
+    );
+
+    const selectedDayLessons = computed(() =>
+      activeLessonsForDate(selectedDate.value)
+    );
+
+    const todayStats = computed(() => {
+      const arr = todayLessons.value.filter(
+        l => l.status !== 'cancelled'
+      );
+
+      return {
+        lessons: arr.length,
+        minutes: arr.reduce((sum, l) => sum + lessonMinutes(l), 0),
+        people: arr.reduce((sum, l) => sum + Number(l.people || 0), 0),
+        earned: arr.reduce((sum, l) => sum + Number(l.payment || 0), 0)
+      };
+    });
+
+    const selectedDayStats = computed(() => {
+      const arr = selectedDayLessons.value.filter(
+        l => l.status !== 'cancelled'
+      );
+
+      return {
+        lessons: arr.length,
+        minutes: arr.reduce((sum, l) => sum + lessonMinutes(l), 0),
+        people: arr.reduce((sum, l) => sum + Number(l.people || 0), 0),
+        earned: arr.reduce((sum, l) => sum + Number(l.payment || 0), 0)
+      };
+    });
+
+    const weekDays = computed(() => {
+      const start = startOfWeek(selectedDate.value);
+
+      return Array.from({ length: 7 }, (_, i) => {
+        const date = addDays(start, i);
+
+        return {
+          date,
+          label: weekdayShort(date),
+          short: shortDate(date),
+          lessons: activeLessonsForDate(date)
+        };
+      });
+    });
+
+    const monthDays = computed(() => {
+      const start = parseISO(startOfMonth(selectedDate.value));
+      const end = parseISO(endOfMonth(selectedDate.value));
+
+      const firstDay = start.getDay();
+      const mondayOffset = firstDay === 0 ? 6 : firstDay - 1;
+
+      const days = [];
+
+      for (let i = 0; i < mondayOffset; i++) {
+        const d = new Date(start);
+        d.setDate(d.getDate() - (mondayOffset - i));
+
+        days.push({
+          date: dateToISO(d),
+          currentMonth: false,
+          lessons: activeLessonsForDate(dateToISO(d))
+        });
+      }
+
+      for (let i = 1; i <= end.getDate(); i++) {
+        const d = new Date(
+          start.getFullYear(),
+          start.getMonth(),
+          i
+        );
+
+        const iso = dateToISO(d);
+
+        days.push({
+          date: iso,
+          currentMonth: true,
+          lessons: activeLessonsForDate(iso)
+        });
+      }
+
+      while (days.length < 42) {
+        const iso = addDays(days[days.length - 1].date, 1);
+
+        days.push({
+          date: iso,
+          currentMonth: false,
+          lessons: activeLessonsForDate(iso)
+        });
+      }
+
+      return days;
+    });
+
+    function calendarPrev() {
+      if (calendarMode.value === 'month') {
+        const d = parseISO(selectedDate.value);
+        d.setMonth(d.getMonth() - 1);
+        selectedDate.value = dateToISO(d);
+        return;
+      }
+
+      if (calendarMode.value === 'week') {
+        selectedDate.value = addDays(selectedDate.value, -7);
+        return;
+      }
+
+      selectedDate.value = addDays(selectedDate.value, -1);
+    }
+
+    function calendarNext() {
+      if (calendarMode.value === 'month') {
+        const d = parseISO(selectedDate.value);
+        d.setMonth(d.getMonth() + 1);
+        selectedDate.value = dateToISO(d);
+        return;
+      }
+
+      if (calendarMode.value === 'week') {
+        selectedDate.value = addDays(selectedDate.value, 7);
+        return;
+      }
+
+      selectedDate.value = addDays(selectedDate.value, 1);
+    }
+
+    function selectCalendarDay(date) {
+      selectedDate.value = date;
+    }
+
+    function isToday(date) {
+      return date === todayISO();
+    }
+
+    function isSelected(date) {
+      return date === selectedDate.value;
+    }
+
+    function copyWeek() {
+      const start = startOfWeek(selectedDate.value);
+
+      const sourceWeek = [];
+
+      for (let i = 0; i < 7; i++) {
+        const date = addDays(start, i);
+
+        const dayLessons = activeLessonsForDate(date);
+
+        dayLessons.forEach(lesson => {
+          if (
+            lesson.type === 'individual' ||
+            lesson.type === 'substitution'
+          ) {
+            return;
+          }
+
+          sourceWeek.push({
+            lesson,
+            dayOffset: i
+          });
+        });
+      }
+
+      if (!sourceWeek.length) {
+        alert('В выбранной неделе нет регулярных занятий для копирования.');
+        return;
+      }
+
+      let copied = 0;
+
+      sourceWeek.forEach(item => {
+        const newDate = addDays(
+          start,
+          7 + item.dayOffset
+        );
+
+        const alreadyExists = lessons.value.some(l =>
+          l.date === newDate &&
+          l.start === item.lesson.start &&
+          l.end === item.lesson.end &&
+          l.type === item.lesson.type &&
+          l.schoolId === item.lesson.schoolId &&
+          l.groupId === item.lesson.groupId
+        );
+
+        if (alreadyExists) {
+          return;
+        }
+
+        lessons.value.push(
+          normalizeLesson({
+            ...clone(item.lesson),
+            id: uid('lesson'),
+            date: newDate,
+            status: 'planned',
+            createdAt: Date.now()
+          })
+        );
+
+        copied++;
+      });
+
+      saveJSON(STORAGE.lessons, lessons.value);
+
+      alert(
+        copied
+          ? `Скопировано занятий: ${copied}`
+          : 'Новых занятий не добавлено — такие занятия уже существуют.'
+      );
+    }
+
+    function addDirection() {
+      const name = prompt('Название направления:');
+      if (!name || !name.trim()) return;
+
+      directions.value.push({
+        id: uid('direction'),
+        name: name.trim()
+      });
+
+      saveJSON(STORAGE.directions, directions.value);
+    }
+
+    function renameDirection(direction) {
+      const name = prompt('Новое название направления:', direction.name);
+      if (!name || !name.trim()) return;
+
+      direction.name = name.trim();
+      saveJSON(STORAGE.directions, directions.value);
+    }
+
+    function deleteDirection(direction) {
+      if (!confirm(`Удалить направление «${direction.name}»?`)) return;
+
+      directions.value = directions.value.filter(d => d.id !== direction.id);
+      saveJSON(STORAGE.directions, directions.value);
+    }
+
+    function openSchoolModal(school = null) {
+      Object.assign(schoolForm, {
+        id: school?.id || '',
+        name: school?.name || ''
+      });
+
+      showSchoolModal.value = true;
+    }
+
+    function saveSchool() {
+      const name = schoolForm.name.trim();
+
+      if (!name) {
+        alert('Введи название школы.');
+        return;
+      }
+
+      if (schoolForm.id) {
+        const found = schools.value.find(
+          s => s.id === schoolForm.id
+        );
+
+        if (found) {
+          found.name = name;
+        }
+      } else {
+        schools.value.push({
+          id: uid('school'),
+          name,
+          archived: false,
+          customRule: null
+        });
+      }
+
+      saveJSON(STORAGE.schools, schools.value);
+
+      showSchoolModal.value = false;
+    }
+
+    function archiveSchool(school) {
+      if (!confirm(`Архивировать школу «${school.name}»?`)) {
+        return;
+      }
+
+      school.archived = true;
+
+      saveJSON(STORAGE.schools, schools.value);
+    }
+
+    function restoreSchool(school) {
+      school.archived = false;
+
+      saveJSON(STORAGE.schools, schools.value);
+    }
+
+    function deleteSchool(school) {
+      if (!confirm(`Удалить школу «${school.name}»? Это действие нельзя отменить.`)) {
+        return;
+      }
+
+      schools.value = schools.value.filter(s => s.id !== school.id);
+      saveJSON(STORAGE.schools, schools.value);
+    }
+
+    function openGroupModal(group = null) {
+      Object.assign(groupForm, {
+        id: group?.id || '',
+        name: group?.name || '',
+        schoolId: group?.schoolId || '',
+        customRule: clone(group?.customRule || null)
+      });
+
+      showGroupModal.value = true;
+    }
+
+    function saveGroup() {
+      const name = groupForm.name.trim();
+
+      if (!name) {
+        alert('Введи название группы.');
+        return;
+      }
+
+      if (groupForm.id) {
+        const found = groups.value.find(
+          g => g.id === groupForm.id
+        );
+
+        if (found) {
+          found.name = name;
+          found.schoolId = groupForm.schoolId;
+          found.customRule = clone(groupForm.customRule);
+        }
+      } else {
+        groups.value.push({
+          id: uid('group'),
+          name,
+          schoolId: groupForm.schoolId,
+          archived: false,
+          customRule: clone(groupForm.customRule)
+        });
+      }
+
+      saveJSON(STORAGE.groups, groups.value);
+
+      showGroupModal.value = false;
+    }
+
+    function archiveGroup(group) {
+      if (!confirm(`Архивировать группу «${group.name}»?`)) {
+        return;
+      }
+
+      group.archived = true;
+
+      saveJSON(STORAGE.groups, groups.value);
+    }
+
+    function restoreGroup(group) {
+      group.archived = false;
+
+      saveJSON(STORAGE.groups, groups.value);
+    }
+
+    function deleteGroup(group) {
+      if (!confirm(`Удалить группу «${group.name}»? Это действие нельзя отменить.`)) {
+        return;
+      }
+
+      groups.value = groups.value.filter(g => g.id !== group.id);
+      saveJSON(STORAGE.groups, groups.value);
+    }
+
+    function addRange() {
+      typeForm.ranges.push({
+        id: uid('range'),
+        min: 1,
+        max: '',
+        amount: 0
+      });
+    }
+
+    function removeRange(index) {
+      typeForm.ranges.splice(index, 1);
+    }
+
+    function openTypeModal(type) {
+      Object.assign(
+        typeForm,
+        clone(type)
+      );
+
+      typeForm.ranges = typeForm.ranges || [];
+
+      showTypeModal.value = true;
+    }
+
+    function saveType() {
+      const found = types.value.find(
+        t => t.id === typeForm.id
+      );
+
+      if (!found) return;
+
+      found.name = typeForm.name.trim() || found.name;
+      found.mode = typeForm.mode;
+      found.amount = Number(typeForm.amount) || 0;
+      found.minPayment = Number(typeForm.minPayment) || 0;
+      found.ranges = clone(typeForm.ranges || []);
+
+      saveJSON(STORAGE.types, types.value);
+
+      showTypeModal.value = false;
+    }
+
+    function resetAllData() {
+      const ok = confirm(
+        'Удалить ВСЕ школы, группы и занятия? Это действие нельзя отменить без резервной копии.'
+      );
+
+      if (!ok) return;
+
+      schools.value = [];
+      groups.value = [];
+      lessons.value = [];
+      directions.value = [];
+
+      saveJSON(STORAGE.schools, schools.value);
+      saveJSON(STORAGE.groups, groups.value);
+      saveJSON(STORAGE.lessons, lessons.value);
+      saveJSON(STORAGE.directions, directions.value);
+    }
+
+    function exportData() {
+      const data = {
+        version: 1,
+        exportedAt: new Date().toISOString(),
+        currency: currency.value,
+        schools: clone(schools.value),
+        groups: clone(groups.value),
+        lessons: clone(lessons.value),
+        types: clone(types.value),
+        directions: clone(directions.value),
+        theme: theme.value,
+        reminder: reminder.value
+      };
+
+      const blob = new Blob(
+        [JSON.stringify(data, null, 2)],
+        { type: 'application/json' }
+      );
+
+      const url = URL.createObjectURL(blob);
+
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `dance-planner-backup-${todayISO()}.json`;
+      a.click();
+
+      URL.revokeObjectURL(url);
+    }
+
+    function importData(event) {
+      const file = event.target.files?.[0];
+
+      if (!file) return;
+
+      const reader = new FileReader();
+
+      reader.onload = e => {
+        try {
+          const data = JSON.parse(e.target.result);
+
+          if (!data || typeof data !== 'object') {
+            throw new Error();
+          }
+
+          if (!confirm('Заменить текущие данные данными из резервной копии?')) {
+            return;
+          }
+
+          schools.value = Array.isArray(data.schools)
+            ? data.schools
+            : [];
+
+          groups.value = Array.isArray(data.groups)
+            ? data.groups
+            : [];
+
+          lessons.value = Array.isArray(data.lessons)
+            ? data.lessons.map(normalizeLesson)
+            : [];
+
+          types.value = Array.isArray(data.types) && data.types.length
+            ? data.types
+            : clone(DEFAULT_TYPES);
+
+          directions.value = Array.isArray(data.directions)
+            ? data.directions
+            : [];
+
+          currency.value = data.currency || 'грн';
+
+          if (data.theme) {
+            theme.value = data.theme;
+          }
+
+          if (data.reminder) {
+            reminder.value = data.reminder;
+          }
+
+          saveJSON(STORAGE.schools, schools.value);
+          saveJSON(STORAGE.groups, groups.value);
+          saveJSON(STORAGE.lessons, lessons.value);
+          saveJSON(STORAGE.types, types.value);
+          saveJSON(STORAGE.directions, directions.value);
+
+          localStorage.setItem(
+            STORAGE.currency,
+            currency.value
+          );
+
+          localStorage.setItem(
+            STORAGE.theme,
+            theme.value
+          );
+
+          localStorage.setItem(
+            STORAGE.reminder,
+            reminder.value
+          );
+
+          applyTheme();
+
+          alert('Данные успешно восстановлены.');
+        } catch {
+          alert('Не удалось прочитать резервную копию.');
+        }
+      };
+
+      reader.readAsText(file);
+
+      event.target.value = '';
+    }
+
+    function applyTheme() {
+      const root = document.documentElement;
+
+      if (theme.value === 'dark') {
+        root.classList.add('dark');
+        return;
+      }
+
+      if (theme.value === 'light') {
+        root.classList.remove('dark');
+        return;
+      }
+
+      const prefersDark = window.matchMedia &&
+        window.matchMedia('(prefers-color-scheme: dark)').matches;
+
+      root.classList.toggle('dark', prefersDark);
+    }
+
+    watch(theme, value => {
+      localStorage.setItem(STORAGE.theme, value);
+      applyTheme();
+    });
+
+    watch(reminder, value => {
+      localStorage.setItem(STORAGE.reminder, value);
+    });
+
+    watch(currency, value => {
+      localStorage.setItem(STORAGE.currency, value);
+    });
+
+    const financeRange = computed(() => {
+      const today = todayISO();
+
+      if (financeMode.value === 'week') {
+        return {
+          from: startOfWeek(today),
+          to: endOfWeek(today)
+        };
+      }
+
+      if (financeMode.value === 'month') {
+        return {
+          from: startOfMonth(today),
+          to: endOfMonth(today)
+        };
+      }
+
+      return {
+        from: financeFrom.value || startOfMonth(today),
+        to: financeTo.value || endOfMonth(today)
+      };
+    });
+
+    const financeLessons = computed(() => {
+      const { from, to } = financeRange.value;
+
+      return lessons.value
+        .filter(l => l.date >= from && l.date <= to)
+        .sort((a, b) => {
+          if (a.date === b.date) {
+            return a.start.localeCompare(b.start);
+          }
+
+          return a.date.localeCompare(b.date);
+        });
+    });
+
+    const financeStats = computed(() => {
+      const arr = financeLessons.value.filter(
+        l => l.status !== 'cancelled'
+      );
+
+      const earned = arr.reduce(
+        (sum, l) => sum + Number(l.payment || 0),
+        0
+      );
+
+      const planned = financeLessons.value.filter(
+        l => l.status === 'planned'
+      ).reduce(
+        (sum, l) => sum + Number(l.payment || 0),
+        0
+      );
+
+      const minutes = arr.reduce(
+        (sum, l) => sum + lessonMinutes(l),
+        0
+      );
+
+      const people = arr.reduce(
+        (sum, l) => sum + Number(l.people || 0),
+        0
+      );
+
+      return {
+        earned,
+        planned,
+        minutes,
+        people,
+        lessons: arr.length,
+        average: arr.length
+          ? earned / arr.length
+          : 0
+      };
+    });
+
+    const financeDays = computed(() => {
+      const { from, to } = financeRange.value;
+
+      const result = [];
+
+      let current = from;
+
+      while (current <= to) {
+        const dayLessons = lessons.value.filter(
+          l =>
+            l.date === current &&
+            l.status !== 'cancelled'
+        );
+
+        const amount = dayLessons.reduce(
+          (sum, l) => sum + Number(l.payment || 0),
+          0
+        );
+
+        result.push({
+          date: current,
+          label: parseISO(current).getDate(),
+          amount
+        });
+
+        current = addDays(current, 1);
+      }
+
+      return result;
+    });
+
+    const financeMax = computed(() =>
+      Math.max(
+        1,
+        ...financeDays.value.map(d => d.amount)
+      )
+    );
+
+    function setFinanceMode(mode) {
+      financeMode.value = mode;
+
+      if (mode === 'custom') {
+        if (!financeFrom.value) {
+          financeFrom.value = startOfMonth(todayISO());
+        }
+
+        if (!financeTo.value) {
+          financeTo.value = endOfMonth(todayISO());
+        }
+      }
+    }
+
+    function switchView(newView) {
+      view.value = newView;
+    }
+
+    function changePeople(amount) {
+      lessonForm.people = Math.max(
+        1,
+        Number(lessonForm.people || 1) + amount
+      );
+
+      updateAutomaticPayment();
+    }
+
+    function formatMoney(value) {
+      return `${Math.round(Number(value) || 0)} ${currency.value}`;
+    }
+
+    function lessonDisplayTitle(lesson) {
+      if (lesson.type === 'other' && lesson.otherText) {
+        return lesson.otherText;
+      }
+
+      if (lesson.type === 'individual') {
+        const student = lesson.studentName?.trim() || 'Индив';
+        const dir = getDirectionName(lesson.directionId);
+        return dir ? `${student} — ${dir}` : student;
+      }
+
+      return lesson.groupId
+        ? getGroupName(lesson.groupId)
+        : getTypeName(lesson.type);
+    }
+
+    function reminderLabel(value) {
+      const labels = {
+        off: 'Отключены',
+        1: 'За 1 час',
+        2: 'За 2 часа',
+        3: 'За 3 часа'
+      };
+
+      return labels[value] || 'Отключены';
+    }
+
+    function notificationSupported() {
+      return 'Notification' in window;
+    }
+
+    async function requestNotificationPermission() {
+      if (!notificationSupported()) {
+        return;
+      }
+
+      if (Notification.permission === 'default') {
+        try {
+          await Notification.requestPermission();
+        } catch {}
+      }
+    }
+
+    async function updateReminder(value) {
+      reminder.value = value;
+
+      if (value !== 'off') {
+        await requestNotificationPermission();
+      }
+    }
+
+    function checkNotifications() {
+      if (
+        reminder.value === 'off' ||
+        !notificationSupported() ||
+        Notification.permission !== 'granted'
+      ) {
+        return;
+      }
+
+      const hours = Number(reminder.value);
+
+      if (!hours) return;
+
+      const now = new Date();
+
+      lessons.value.forEach(lesson => {
+        if (lesson.status === 'cancelled') return;
+
+        const lessonDateTime = new Date(
+          `${lesson.date}T${lesson.start}:00`
+        );
+
+        const diffMinutes =
+          (lessonDateTime.getTime() - now.getTime()) / 60000;
+
+        if (
+          diffMinutes >= hours * 60 - 1 &&
+          diffMinutes <= hours * 60 + 1
+        ) {
+          const key = `${lesson.id}_${hours}`;
+
+          if (notified.value[key]) {
+            return;
+          }
+
+          const title = 'Dance Planner';
+
+          const body =
+            `Через ${hours} ${hours === 1 ? 'час' : 'часа'}: ` +
+            `${lessonDisplayTitle(lesson)} в ${lesson.start}`;
+
+          try {
+            new Notification(title, { body });
+
+            notified.value[key] = true;
+
+            saveJSON(
+              STORAGE.notified,
+              notified.value
+            );
+          } catch {}
+        }
+      });
+    }
+
+    let notificationTimer = null;
+
+    onMounted(() => {
+      applyTheme();
+
+      notificationTimer = setInterval(
+        checkNotifications,
+        30000
+      );
+
+      checkNotifications();
+    });
+
+    onBeforeUnmount(() => {
+      if (notificationTimer) {
+        clearInterval(notificationTimer);
+      }
+    });
+
+    const archivedSchools = computed(() =>
+      schools.value.filter(s => s.archived)
+    );
+
+    const archivedGroups = computed(() =>
+      groups.value.filter(g => g.archived)
+    );
+
+    return {
+      view,
+      selectedDate,
+      calendarMode,
+
+      financeMode,
+      financeFrom,
+      financeTo,
+
+      schools,
+      groups,
+      lessons,
+      types,
+      directions,
+      currency,
+      theme,
+      reminder,
+
+      activeSchools,
+      activeGroups,
+      archivedSchools,
+      archivedGroups,
+      currentSchoolGroups,
+
+      lessonForm,
+      schoolForm,
+      groupForm,
+      typeForm,
+
+      showLessonModal,
+      showSchoolModal,
+      showGroupModal,
+      showTypeModal,
+
+      editingLesson,
+
+      calendarTitle,
+      weekDays,
+      monthDays,
+
+      todayLessons,
+      selectedDayLessons,
+      todayStats,
+      selectedDayStats,
+
+      calculatedPayment,
+
+      financeRange,
+      financeLessons,
+      financeStats,
+      financeDays,
+      financeMax,
+
+      getSchoolName,
+      getGroupName,
+      getTypeName,
+      getDirectionName,
+      statusLabel,
+      statusClass,
+      statusActionClass,
+      lessonMinutes,
+      lessonHours,
+      formatHours,
+      formatMoney,
+      lessonDisplayTitle,
+      reminderLabel,
+
+      openAddLesson,
+      openEditLesson,
+      closeLessonModal,
+      saveLesson,
+      deleteLesson,
+      copyLesson,
+      toggleDone,
+      cancelLesson,
+
+      calendarPrev,
+      calendarNext,
+      selectCalendarDay,
+      isToday,
+      isSelected,
+      copyWeek,
+
+      openSchoolModal,
+      saveSchool,
+      archiveSchool,
+      restoreSchool,
+      deleteSchool,
+
+      openGroupModal,
+      saveGroup,
+      archiveGroup,
+      restoreGroup,
+      deleteGroup,
+
+      openTypeModal,
+      saveType,
+      addRange,
+      removeRange,
+
+      addDirection,
+      renameDirection,
+      deleteDirection,
+
+      resetAllData,
+      exportData,
+      importData,
+
+      switchView,
+      changePeople,
+      updateReminder,
+      setFinanceMode,
+
+      todayISO,
+      formatDate,
+      shortDate,
+      weekdayShort,
+      monthYear
+    };
+  },
+
+  template: `
+    <div
+      class="min-h-screen bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-slate-100"
+    >
+      <div class="mx-auto max-w-md min-h-screen">
+
+        <!-- HEADER -->
+        <header
+          class="sticky top-0 z-30 bg-slate-50/95 dark:bg-slate-950/95 backdrop-blur border-b border-slate-200 dark:border-slate-800"
+        >
+          <div class="px-4 py-3 flex items-center justify-between">
+            <div>
+              <div class="font-bold text-lg leading-tight">
+                Dance Planner
+              </div>
+
+              <div class="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
+                {{ formatDate(todayISO()) }}
+              </div>
+            </div>
+
+            <button
+              @click="switchView('settings')"
+              class="w-10 h-10 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 flex items-center justify-center"
+            >
+              <i class="fa-solid fa-gear text-sm"></i>
+            </button>
+          </div>
+        </header>
+
+        <!-- CONTENT -->
+        <main class="px-4 pt-4 pb-28">
+
+          <!-- TODAY -->
+          <section v-if="view === 'today'">
+
+            <div class="mb-4">
+              <h1 class="text-2xl font-bold">
+                Сегодня
+              </h1>
+
+              <p class="text-sm text-slate-500 dark:text-slate-400 mt-1">
+                {{ formatDate(todayISO(), { weekday: 'long' }) }}
+              </p>
+            </div>
+
+            <div class="grid grid-cols-2 gap-2 mb-4">
+              <StatCard
+                label="Занятий"
+                :value="todayStats.lessons"
+                icon="fa-solid fa-calendar-check"
+              />
+
+              <StatCard
+                label="Часы"
+                :value="formatHours(todayStats.minutes)"
+                icon="fa-solid fa-clock"
+              />
+
+              <StatCard
+                label="Людей"
+                :value="todayStats.people"
+                icon="fa-solid fa-users"
+              />
+
+              <StatCard
+                label="Заработано"
+                :value="formatMoney(todayStats.earned)"
+                icon="fa-solid fa-money-bill"
+              />
+            </div>
+
+            <div class="flex items-center justify-between mb-3">
+              <h2 class="font-semibold">
+                Занятия
+              </h2>
+
+              <button
+                @click="openAddLesson(todayISO())"
+                class="text-sm text-blue-600 dark:text-blue-400 font-medium"
+              >
+                + Добавить
+              </button>
+            </div>
+
+            <div
+              v-if="!todayLessons.length"
+              class="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl p-6 text-center"
+            >
+              <div class="text-3xl mb-3">
+                📅
+              </div>
+
+              <div class="font-medium">
+                На сегодня занятий нет
+              </div>
+
+              <div class="text-sm text-slate-500 mt-1">
+                Добавь первое занятие
+              </div>
+
+              <button
+                @click="openAddLesson(todayISO())"
+                class="mt-4 px-4 py-2.5 rounded-xl bg-blue-600 text-white text-sm font-medium"
+              >
+                Добавить занятие
+              </button>
+            </div>
+
+            <div v-else class="space-y-3">
+              <div
+                v-for="lesson in todayLessons"
+                :key="lesson.id"
+                class="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 overflow-hidden"
+              >
+                <div class="p-4">
+
+                  <div class="flex items-start justify-between gap-3">
+
+                    <div>
+                      <div class="text-lg font-bold">
+                        {{ lesson.start }}–{{ lesson.end }}
+                      </div>
+
+                      <div class="font-semibold text-blue-600 dark:text-blue-400 mt-1 text-base">
+                        {{ lessonDisplayTitle(lesson) }}
+                      </div>
+
+                      <div class="text-xs text-slate-500 dark:text-slate-400 mt-1">
+                        {{ getTypeName(lesson.type) }}
+                        <span v-if="lesson.schoolId">
+                          · {{ getSchoolName(lesson.schoolId) }}
+                        </span>
+                      </div>
+                    </div>
+
+                    <span
+                      class="shrink-0 px-2 py-1 rounded-lg text-[11px] font-medium"
+                      :class="statusClass(lesson.status)"
+                    >
+                      {{ statusLabel(lesson.status) }}
+                    </span>
+                  </div>
+
+                  <div
+                    class="grid grid-cols-3 gap-2 mt-4 text-xs"
+                  >
+                    <div
+                      class="bg-slate-50 dark:bg-slate-950 rounded-xl p-2.5"
+                    >
+                      <div class="text-slate-400">
+                        Людей
+                      </div>
+                      <div class="font-semibold mt-0.5">
+                        {{ lesson.people }}
+                      </div>
+                    </div>
+
+                    <div
+                      class="bg-slate-50 dark:bg-slate-950 rounded-xl p-2.5"
+                    >
+                      <div class="text-slate-400">
+                        Оплата
+                      </div>
+                      <div class="font-semibold mt-0.5">
+                        {{ formatMoney(lesson.payment) }}
+                      </div>
+                    </div>
+
+                    <div
+                      class="bg-slate-50 dark:bg-slate-950 rounded-xl p-2.5"
+                    >
+                      <div class="text-slate-400">
+                        Длительность
+                      </div>
+                      <div class="font-semibold mt-0.5">
+                        {{ formatHours(lessonMinutes(lesson)) }}
+                      </div>
+                    </div>
+                  </div>
+
+                  <div
+                    v-if="lesson.note"
+                    class="mt-3 text-sm text-slate-600 dark:text-slate-300"
+                  >
+                    {{ lesson.note }}
+                  </div>
+
+                  <div class="flex gap-2 mt-4">
+
+                    <button
+                      @click="openEditLesson(lesson)"
+                      class="w-10 h-10 rounded-xl bg-slate-100 dark:bg-slate-800 flex items-center justify-center"
+                      title="Редактировать"
+                    >
+                      ✏️
+                    </button>
+
+                    <button
+                      @click="copyLesson(lesson)"
+                      class="w-10 h-10 rounded-xl bg-slate-100 dark:bg-slate-800 flex items-center justify-center"
+                      title="Копировать"
+                    >
+                      📋
+                    </button>
+
+                    <button
+                      @click="toggleDone(lesson)"
+                      class="w-10 h-10 rounded-xl flex items-center justify-center transition"
+                      :class="statusActionClass(lesson, 'done')"
+                      title="Проведено"
+                    >
+                      ✓
+                    </button>
+
+                    <button
+                      @click="cancelLesson(lesson)"
+                      class="w-10 h-10 rounded-xl flex items-center justify-center transition"
+                      :class="statusActionClass(lesson, 'cancelled')"
+                      title="Отменено"
+                    >
+                      ×
+                    </button>
+
+                    <button
+                      @click="deleteLesson(lesson)"
+                      class="ml-auto w-10 h-10 rounded-xl bg-slate-100 dark:bg-slate-800 flex items-center justify-center"
+                      title="Удалить"
+                    >
+                      🗑️
+                    </button>
+
+                  </div>
+                </div>
+              </div>
+            </div>
+          </section>
+
+
+          <!-- CALENDAR -->
+          <section v-else-if="view === 'calendar'">
+
+            <div class="flex items-center justify-between mb-4">
+              <div>
+                <h1 class="text-2xl font-bold">
+                  Календарь
+                </h1>
+
+                <p class="text-sm text-slate-500 dark:text-slate-400 mt-1">
+                  {{ calendarTitle }}
+                </p>
+              </div>
+
+              <button
+                @click="openAddLesson(selectedDate)"
+                class="w-10 h-10 rounded-xl bg-blue-600 text-white flex items-center justify-center text-lg font-bold"
+              >
+                +
+              </button>
+            </div>
+
+            <!-- MODES -->
+            <div
+              class="grid grid-cols-3 gap-1 p-1 bg-slate-200 dark:bg-slate-800 rounded-xl mb-4"
+            >
+              <button
+                @click="calendarMode = 'day'"
+                class="py-2 rounded-lg text-sm"
+                :class="calendarMode === 'day'
+                  ? 'bg-white dark:bg-slate-900 shadow font-semibold'
+                  : 'text-slate-500'"
+              >
+                День
+              </button>
+
+              <button
+                @click="calendarMode = 'week'"
+                class="py-2 rounded-lg text-sm"
+                :class="calendarMode === 'week'
+                  ? 'bg-white dark:bg-slate-900 shadow font-semibold'
+                  : 'text-slate-500'"
+              >
+                Неделя
+              </button>
+
+              <button
+                @click="calendarMode = 'month'"
+                class="py-2 rounded-lg text-sm"
+                :class="calendarMode === 'month'
+                  ? 'bg-white dark:bg-slate-900 shadow font-semibold'
+                  : 'text-slate-500'"
+              >
+                Месяц
+              </button>
+            </div>
+
+            <!-- CALENDAR NAVIGATION -->
+            <div class="flex items-center justify-between mb-3">
+
+              <button
+                @click="calendarPrev"
+                class="w-10 h-10 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 flex items-center justify-center"
+              >
+                <i class="fa-solid fa-chevron-left text-xs"></i>
+              </button>
+
+              <div
+                class="text-sm font-semibold text-center flex-1 px-3"
+              >
+                {{ calendarTitle }}
+              </div>
+
+              <button
+                @click="calendarNext"
+                class="w-10 h-10 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 flex items-center justify-center"
+              >
+                <i class="fa-solid fa-chevron-right text-xs"></i>
+              </button>
+
+            </div>
+
+            <!-- DAY -->
+            <div v-if="calendarMode === 'day'">
+
+              <div
+                class="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 p-4 mb-3"
+              >
+                <div class="flex items-center justify-between">
+                  <div>
+                    <div class="text-xl font-bold">
+                      {{ formatDate(selectedDate, { weekday: 'long' }) }}
+                    </div>
+
+                    <div class="text-sm text-slate-500 mt-1">
+                      {{ selectedDayLessons.length }} занятий ·
+                      {{ formatMoney(selectedDayStats.earned) }}
+                    </div>
+                  </div>
+
+                  <button
+                    @click="openAddLesson(selectedDate)"
+                    class="px-3 py-2 rounded-xl bg-blue-600 text-white text-sm"
+                  >
+                    + Занятие
+                  </button>
+                </div>
+              </div>
+
+              <div
+                v-if="!selectedDayLessons.length"
+                class="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl p-6 text-center"
+              >
+                <div class="text-2xl mb-2">
+                  📅
+                </div>
+
+                <div class="font-medium">
+                  Занятий нет
+                </div>
+              </div>
+
+              <div v-else class="space-y-3">
+                <div
+                  v-for="lesson in selectedDayLessons"
+                  :key="lesson.id"
+                  class="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 p-4"
+                >
+                  <div class="flex justify-between gap-3">
+
+                    <div>
+                      <div class="font-bold">
+                        {{ lesson.start }}–{{ lesson.end }}
+                      </div>
+
+                      <div class="font-semibold text-blue-600 dark:text-blue-400 mt-1">
+                        {{ lessonDisplayTitle(lesson) }}
+                      </div>
+
+                      <div class="text-xs text-slate-500 mt-1">
+                        {{ getTypeName(lesson.type) }}
+                        · {{ lesson.people }} чел.
+                        · {{ formatMoney(lesson.payment) }}
+                      </div>
+                    </div>
+
+                    <span
+                      class="px-2 py-1 rounded-lg text-[11px] h-fit"
+                      :class="statusClass(lesson.status)"
+                    >
+                      {{ statusLabel(lesson.status) }}
+                    </span>
+                  </div>
+
+                  <div class="flex gap-2 mt-3">
+                    <button
+                      @click="openEditLesson(lesson)"
+                      class="w-9 h-9 rounded-lg bg-slate-100 dark:bg-slate-800"
+                    >
+                      ✏️
+                    </button>
+
+                    <button
+                      @click="copyLesson(lesson)"
+                      class="w-9 h-9 rounded-lg bg-slate-100 dark:bg-slate-800"
+                    >
+                      📋
+                    </button>
+
+                    <button
+                      @click="toggleDone(lesson)"
+                      class="w-9 h-9 rounded-lg flex items-center justify-center transition"
+                      :class="statusActionClass(lesson, 'done')"
+                      title="Проведено"
+                    >
+                      ✓
+                    </button>
+
+                    <button
+                      @click="cancelLesson(lesson)"
+                      class="w-9 h-9 rounded-lg flex items-center justify-center transition"
+                      :class="statusActionClass(lesson, 'cancelled')"
+                      title="Отменено"
+                    >
+                      ×
+                    </button>
+
+                    <button
+                      @click="deleteLesson(lesson)"
+                      class="ml-auto w-9 h-9 rounded-lg bg-slate-100 dark:bg-slate-800"
+                    >
+                      🗑️
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- WEEK -->
+            <div v-else-if="calendarMode === 'week'">
+
+              <div class="flex items-center justify-between mb-3">
+                <div class="text-sm text-slate-500">
+                  Нажми на день, чтобы открыть его
+                </div>
+
+                <button
+                  @click="copyWeek"
+                  class="px-3 py-2 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 text-xs font-medium"
+                >
+                  Скопировать неделю
+                </button>
+              </div>
+
+              <div class="space-y-3">
+
+                <div
+                  v-for="day in weekDays"
+                  :key="day.date"
+                  @click="selectCalendarDay(day.date)"
+                  class="rounded-2xl border overflow-hidden cursor-pointer transition"
+                  :class="[
+                    isSelected(day.date)
+                      ? 'border-blue-500 ring-1 ring-blue-500'
+                      : 'border-slate-200 dark:border-slate-800',
+                    'bg-white dark:bg-slate-900'
+                  ]"
+                >
+
+                  <div
+                    class="px-4 py-3 flex items-center justify-between"
+                    :class="isToday(day.date)
+                      ? 'bg-blue-50 dark:bg-blue-950/30'
+                      : ''"
+                  >
+                    <div class="flex items-center gap-2">
+
+                      <div>
+                        <div class="text-xs uppercase text-slate-400">
+                          {{ day.label }}
+                        </div>
+
+                        <div class="font-semibold">
+                          {{ day.short }}
+                        </div>
+                      </div>
+
+                      <span
+                        v-if="isToday(day.date)"
+                        class="text-[10px] px-2 py-1 rounded-lg bg-blue-600 text-white"
+                      >
+                        Сегодня
+                      </span>
+
+                    </div>
+
+                    <div class="text-xs text-slate-400">
+                      {{ day.lessons.length }}
+                      {{ day.lessons.length === 1 ? 'занятие' : 'занятий' }}
+                    </div>
+                  </div>
+
+                  <div
+                    v-if="day.lessons.length"
+                    class="border-t border-slate-100 dark:border-slate-800"
+                  >
+                    <div
+                      v-for="lesson in day.lessons"
+                      :key="lesson.id"
+                      @click.stop="openEditLesson(lesson)"
+                      class="px-4 py-3 border-b last:border-b-0 border-slate-100 dark:border-slate-800"
+                    >
+                      <div class="flex items-center gap-3">
+
+                        <div class="text-xs font-semibold w-20 shrink-0">
+                          {{ lesson.start }}–{{ lesson.end }}
+                        </div>
+
+                        <div class="min-w-0 flex-1">
+                          <div class="font-semibold text-blue-600 dark:text-blue-400 truncate">
+                            {{ lessonDisplayTitle(lesson) }}
+                          </div>
+
+                          <div class="text-[11px] text-slate-400 mt-0.5">
+                            {{ getTypeName(lesson.type) }}
+                            · {{ lesson.people }} чел.
+                          </div>
+                        </div>
+
+                        <div class="text-xs font-semibold shrink-0">
+                          {{ formatMoney(lesson.payment) }}
+                        </div>
+
+                      </div>
+                    </div>
+                  </div>
+
+                  <div
+                    v-else
+                    class="px-4 py-4 text-xs text-slate-400"
+                  >
+                    Нет занятий
+                  </div>
+
+                </div>
+
+              </div>
+            </div>
+
+            <!-- MONTH -->
+            <div v-else>
+
+              <div
+                class="grid grid-cols-7 gap-1 text-center mb-2"
+              >
+                <div
+                  v-for="day in ['Пн','Вт','Ср','Чт','Пт','Сб','Вс']"
+                  :key="day"
+                  class="text-[10px] text-slate-400 py-1"
+                >
+                  {{ day }}
+                </div>
+              </div>
+
+              <div class="grid grid-cols-7 gap-1">
+
+                <button
+                  v-for="day in monthDays"
+                  :key="day.date"
+                  @click="selectCalendarDay(day.date)"
+                  class="min-h-[58px] rounded-xl p-1.5 text-left border transition"
+                  :class="[
+                    day.currentMonth
+                      ? 'bg-white dark:bg-slate-900 border-slate-200 dark:border-slate-800'
+                      : 'bg-slate-100/60 dark:bg-slate-950 border-transparent opacity-45',
+                    isSelected(day.date)
+                      ? 'ring-2 ring-blue-500'
+                      : '',
+                    isToday(day.date)
+                      ? 'border-blue-500'
+                      : ''
+                  ]"
+                >
+
+                  <div
+                    class="text-xs font-semibold"
+                    :class="isToday(day.date)
+                      ? 'text-blue-600 dark:text-blue-400'
+                      : ''"
+                  >
+                    {{ parseInt(day.date.slice(-2)) }}
+                  </div>
+
+                  <div
+                    v-if="day.lessons.length"
+                    class="mt-1 space-y-0.5"
+                  >
+                    <div
+                      class="text-[9px] bg-blue-100 dark:bg-blue-950/50 text-blue-700 dark:text-blue-300 rounded px-1 py-0.5 truncate"
+                    >
+                      {{ day.lessons.length }} зан.
+                    </div>
+                  </div>
+
+                </button>
+
+              </div>
+
+              <!-- SELECTED MONTH DAY -->
+              <div
+                class="mt-4 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl overflow-hidden"
+              >
+
+                <div class="px-4 py-3 border-b border-slate-100 dark:border-slate-800">
+                  <div class="font-semibold">
+                    {{ formatDate(selectedDate, { weekday: 'long' }) }}
+                  </div>
+
+                  <div class="text-xs text-slate-500 mt-1">
+                    {{ selectedDayLessons.length }}
+                    занятий ·
+                    {{ formatMoney(selectedDayStats.earned) }}
+                  </div>
+                </div>
+
+                <div
+                  v-if="!selectedDayLessons.length"
+                  class="p-5 text-center text-sm text-slate-400"
+                >
+                  В этот день занятий нет
+                </div>
+
+                <div v-else>
+                  <div
+                    v-for="lesson in selectedDayLessons"
+                    :key="lesson.id"
+                    @click="openEditLesson(lesson)"
+                    class="px-4 py-3 border-b last:border-b-0 border-slate-100 dark:border-slate-800 cursor-pointer"
+                  >
+                    <div class="flex items-center gap-3">
+                      <div class="text-xs font-semibold">
+                        {{ lesson.start }}
+                      </div>
+
+                      <div class="flex-1 min-w-0">
+                        <div class="font-semibold text-blue-600 dark:text-blue-400 truncate">
+                          {{ lessonDisplayTitle(lesson) }}
+                        </div>
+
+                        <div class="text-[11px] text-slate-400">
+                          {{ getTypeName(lesson.type) }}
+                          · {{ lesson.people }} чел.
+                        </div>
+                      </div>
+
+                      <div class="text-xs font-semibold">
+                        {{ formatMoney(lesson.payment) }}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+              </div>
+
+            </div>
+
+          </section>
+
+
+          <!-- ADD TAB -->
+          <section v-else-if="view === 'add'">
+
+            <div class="mb-4">
+              <h1 class="text-2xl font-bold">
+                Добавить занятие
+              </h1>
+
+              <p class="text-sm text-slate-500 mt-1">
+                Заполни данные занятия
+              </p>
+            </div>
+
+            <div
+              class="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 p-4 space-y-4"
+            >
+
+              <FormField label="Дата">
+                <input
+                  v-model="lessonForm.date"
+                  type="date"
+                  class="w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-950 px-3 py-2.5 outline-none"
+                >
+              </FormField>
+
+              <div class="grid grid-cols-2 gap-3">
+                <FormField label="Начало">
+                  <input
+                    v-model="lessonForm.start"
+                    type="time"
+                    class="w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-950 px-3 py-2.5"
+                  >
+                </FormField>
+
+                <FormField label="Конец">
+                  <input
+                    v-model="lessonForm.end"
+                    type="time"
+                    class="w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-950 px-3 py-2.5"
+                  >
+                </FormField>
+              </div>
+
+              <FormField label="Тип занятия">
+                <select
+                  v-model="lessonForm.type"
+                  class="w-full rounded-xl border-2 border-blue-500 bg-blue-50/20 dark:bg-blue-950/20 px-3 py-2.5 font-semibold text-blue-600 dark:text-blue-400"
+                >
+                  <option
+                    v-for="type in types"
+                    :key="type.id"
+                    :value="type.id"
+                  >
+                    {{ type.name }}
+                  </option>
+                </select>
+              </FormField>
+
+              <FormField
+                v-if="lessonForm.type === 'other'"
+                label="Что именно?"
+              >
+                <input
+                  v-model="lessonForm.otherText"
+                  type="text"
+                  placeholder="Например: постановка номера"
+                  class="w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-950 px-3 py-2.5"
+                >
+              </FormField>
+
+              <!-- БЛОК ДАННЫХ ИНДИВА -->
+              <div
+                v-if="lessonForm.type === 'individual'"
+                class="space-y-3 p-3.5 rounded-2xl bg-blue-50/80 dark:bg-blue-950/40 border border-blue-200 dark:border-blue-800"
+              >
+                <div class="text-xs font-bold uppercase tracking-wider text-blue-700 dark:text-blue-300">
+                  ✨ Данные индива
+                </div>
+
+                <FormField label="Имя ученика">
+                  <input
+                    v-model="lessonForm.studentName"
+                    type="text"
+                    placeholder="Введите имя ученика"
+                    class="w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 px-3 py-2.5"
+                  >
+                </FormField>
+
+                <FormField label="Направление">
+                  <select
+                    v-model="lessonForm.directionId"
+                    class="w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 px-3 py-2.5"
+                  >
+                    <option value="">Не указано</option>
+                    <option
+                      v-for="direction in directions"
+                      :key="direction.id"
+                      :value="direction.id"
+                    >
+                      {{ direction.name }}
+                    </option>
+                  </select>
+                  <div
+                    v-if="!directions.length"
+                    class="text-[11px] text-amber-600 dark:text-amber-400 mt-1"
+                  >
+                    ⚠️ Направления ещё не созданы. Добавьте их во вкладке Настройки → Направления.
+                  </div>
+                </FormField>
+              </div>
+
+              <FormField label="Школа">
+                <select
+                  v-model="lessonForm.schoolId"
+                  class="w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-950 px-3 py-2.5"
+                >
+                  <option value="">
+                    Без школы
+                  </option>
+
+                  <option
+                    v-for="school in activeSchools"
+                    :key="school.id"
+                    :value="school.id"
+                  >
+                    {{ school.name }}
+                  </option>
+                </select>
+              </FormField>
+
+              <FormField
+                v-if="lessonForm.type !== 'individual'"
+                label="Группа / ученик"
+              >
+                <select
+                  v-model="lessonForm.groupId"
+                  class="w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-950 px-3 py-2.5"
+                >
+                  <option value="">
+                    Не указано
+                  </option>
+
+                  <option
+                    v-for="group in currentSchoolGroups"
+                    :key="group.id"
+                    :value="group.id"
+                  >
+                    {{ group.name }}
+                  </option>
+                </select>
+              </FormField>
+
+              <div
+                v-if="lessonForm.type !== 'individual'"
+              >
+                <label class="block text-xs font-medium text-slate-500 dark:text-slate-400 mb-1.5">
+                  Количество людей
+                </label>
+
+                <div class="flex items-center gap-2">
+
+                  <button
+                    @click="changePeople(-1)"
+                    type="button"
+                    class="w-11 h-11 rounded-xl bg-slate-100 dark:bg-slate-800 text-lg"
+                  >
+                    −
+                  </button>
+
+                  <div
+                    class="flex-1 h-11 rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-700 flex items-center justify-center font-semibold"
+                  >
+                    {{ lessonForm.people }}
+                  </div>
+
+                  <button
+                    @click="changePeople(1)"
+                    type="button"
+                    class="w-11 h-11 rounded-xl bg-slate-100 dark:bg-slate-800 text-lg"
+                  >
+                    +
+                  </button>
+
+                </div>
+              </div>
+
+              <PaymentEditor
+                v-model="lessonForm.payment"
+                v-model:manual="lessonForm.paymentManual"
+                :calculated="calculatedPayment"
+                :currency="currency"
+              />
+
+              <FormField label="Статус">
+                <select
+                  v-model="lessonForm.status"
+                  class="w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-950 px-3 py-2.5"
+                >
+                  <option value="planned">
+                    Запланировано
+                  </option>
+
+                  <option value="done">
+                    Проведено
+                  </option>
+
+                  <option value="cancelled">
+                    Отменено
+                  </option>
+                </select>
+              </FormField>
+
+              <FormField label="Заметка">
+                <textarea
+                  v-model="lessonForm.note"
+                  rows="3"
+                  placeholder="Дополнительная информация"
+                  class="w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-950 px-3 py-2.5 resize-none"
+                ></textarea>
+              </FormField>
+
+              <button
+                @click="saveLesson(); switchView('calendar')"
+                class="w-full py-3 rounded-xl bg-blue-600 text-white font-semibold"
+              >
+                Сохранить занятие
+              </button>
+
+            </div>
+          </section>
+
+
+          <!-- FINANCE -->
+          <section v-else-if="view === 'finance'">
+
+            <div class="mb-4">
+              <h1 class="text-2xl font-bold">
+                Финансы
+              </h1>
+
+              <p class="text-sm text-slate-500 mt-1">
+                Статистика за выбранный период
+              </p>
+            </div>
+
+            <div
+              class="grid grid-cols-3 gap-1 p-1 bg-slate-200 dark:bg-slate-800 rounded-xl mb-4"
+            >
+              <button
+                @click="setFinanceMode('week')"
+                class="py-2 rounded-lg text-xs"
+                :class="financeMode === 'week'
+                  ? 'bg-white dark:bg-slate-900 shadow font-semibold'
+                  : 'text-slate-500'"
+              >
+                Неделя
+              </button>
+
+              <button
+                @click="setFinanceMode('month')"
+                class="py-2 rounded-lg text-xs"
+                :class="financeMode === 'month'
+                  ? 'bg-white dark:bg-slate-900 shadow font-semibold'
+                  : 'text-slate-500'"
+              >
+                Месяц
+              </button>
+
+              <button
+                @click="setFinanceMode('custom')"
+                class="py-2 rounded-lg text-xs"
+                :class="financeMode === 'custom'
+                  ? 'bg-white dark:bg-slate-900 shadow font-semibold'
+                  : 'text-slate-500'"
+              >
+                Свой
+              </button>
+            </div>
+
+            <div
+              v-if="financeMode === 'custom'"
+              class="grid grid-cols-2 gap-2 mb-4"
+            >
+              <div>
+                <label class="text-xs text-slate-500">
+                  От
+                </label>
+
+                <input
+                  v-model="financeFrom"
+                  type="date"
+                  class="mt-1 w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 px-3 py-2.5"
+                >
+              </div>
+
+              <div>
+                <label class="text-xs text-slate-500">
+                  До
+                </label>
+
+                <input
+                  v-model="financeTo"
+                  type="date"
+                  class="mt-1 w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 px-3 py-2.5"
+                >
+              </div>
+            </div>
+
+            <div class="grid grid-cols-2 gap-2">
+
+              <StatCard
+                label="Заработано"
+                :value="formatMoney(financeStats.earned)"
+                icon="fa-solid fa-money-bill"
+              />
+
+              <StatCard
+                label="Запланировано"
+                :value="formatMoney(financeStats.planned)"
+                icon="fa-solid fa-hourglass-half"
+              />
+
+              <StatCard
+                label="Часы"
+                :value="formatHours(financeStats.minutes)"
+                icon="fa-solid fa-clock"
+              />
+
+              <StatCard
+                label="Людей"
+                :value="financeStats.people"
+                icon="fa-solid fa-users"
+              />
+
+            </div>
+
+            <div
+              class="mt-4 bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 p-4"
+            >
+
+              <div class="flex items-center justify-between mb-4">
+                <div>
+                  <div class="font-semibold">
+                    Доход по дням
+                  </div>
+
+                  <div class="text-xs text-slate-400 mt-1">
+                    {{ financeRange.from }} — {{ financeRange.to }}
+                  </div>
+                </div>
+
+                <div class="text-sm font-bold">
+                  {{ formatMoney(financeStats.earned) }}
+                </div>
+              </div>
+
+              <div
+                v-if="financeDays.length"
+                class="overflow-x-auto hide-scrollbar"
+              >
+                <div
+                  class="flex items-end gap-2 min-w-max"
+                  style="height: 190px"
+                >
+
+                  <div
+                    v-for="day in financeDays"
+                    :key="day.date"
+                    class="w-7 h-full flex flex-col items-center justify-end"
+                  >
+
+                    <div
+                      class="w-6 rounded-t-md bg-blue-500 dark:bg-blue-400 transition-all"
+                      :style="{
+                        height:
+                          Math.max(
+                            day.amount
+                              ? 8
+                              : 2,
+                            (day.amount / financeMax) * 145
+                          ) + 'px'
+                      }"
+                      :title="formatMoney(day.amount)"
+                    ></div>
+
+                    <div class="text-[9px] text-slate-400 mt-2">
+                      {{ day.label }}
+                    </div>
+
+                  </div>
+
+                </div>
+              </div>
+
+              <div
+                v-else
+                class="text-center text-sm text-slate-400 py-8"
+              >
+                Нет данных
+              </div>
+
+            </div>
+
+            <div
+              class="mt-3 bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 p-4"
+            >
+              <div class="flex justify-between text-sm">
+                <span class="text-slate-500">
+                  Среднее за занятие
+                </span>
+
+                <span class="font-semibold">
+                  {{ formatMoney(financeStats.average) }}
+                </span>
+              </div>
+            </div>
+
+          </section>
+
+
+          <!-- SETTINGS -->
+          <section v-else-if="view === 'settings'">
+
+            <div class="mb-4">
+              <h1 class="text-2xl font-bold">
+                Настройки
+              </h1>
+            </div>
+
+            <div class="space-y-3">
+
+              <!-- GENERAL -->
+              <SettingsSection
+                title="Основные"
+                icon="fa-solid fa-sliders"
+              >
+
+                <div class="space-y-4">
+
+                  <div>
+                    <label class="text-xs text-slate-500">
+                      Валюта
+                    </label>
+
+                    <input
+                      v-model="currency"
+                      type="text"
+                      class="mt-1 w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-950 px-3 py-2.5"
+                    >
+                  </div>
+
+                  <div>
+                    <label class="text-xs text-slate-500">
+                      Тема
+                    </label>
+
+                    <select
+                      v-model="theme"
+                      class="mt-1 w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-950 px-3 py-2.5"
+                    >
+                      <option value="system">
+                        Как на телефоне
+                      </option>
+
+                      <option value="light">
+                        Светлая
+                      </option>
+
+                      <option value="dark">
+                        Тёмная
+                      </option>
+                    </select>
+                  </div>
+
+                </div>
+
+              </SettingsSection>
+
+
+              <!-- NOTIFICATIONS -->
+              <SettingsSection
+                title="Уведомления"
+                icon="fa-solid fa-bell"
+              >
+
+                <div>
+                  <label class="text-xs text-slate-500">
+                    Напоминать о занятии
+                  </label>
+
+                  <select
+                    :value="reminder"
+                    @change="updateReminder($event.target.value)"
+                    class="mt-1 w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-950 px-3 py-2.5"
+                  >
+                    <option value="off">
+                      Отключить
+                    </option>
+
+                    <option value="1">
+                      За 1 час
+                    </option>
+
+                    <option value="2">
+                      За 2 часа
+                    </option>
+
+                    <option value="3">
+                      За 3 часа
+                    </option>
+                  </select>
+
+                  <div class="text-[11px] text-slate-400 mt-2">
+                    Сейчас: {{ reminderLabel(reminder) }}
+                  </div>
+
+                </div>
+
+              </SettingsSection>
+
+
+              <!-- DIRECTIONS -->
+              <SettingsSection
+                title="Направления"
+                icon="fa-solid fa-compass"
+              >
+                <button
+                  @click="addDirection"
+                  class="w-full py-2.5 rounded-xl bg-blue-600 text-white text-sm font-medium mb-3"
+                >
+                  + Добавить направление
+                </button>
+
+                <div
+                  v-if="!directions.length"
+                  class="text-sm text-slate-400 text-center py-3"
+                >
+                  Направлений пока нет
+                </div>
+
+                <div v-else class="space-y-2">
+                  <div
+                    v-for="direction in directions"
+                    :key="direction.id"
+                    class="flex items-center gap-2 p-3 rounded-xl bg-slate-50 dark:bg-slate-950"
+                  >
+                    <div class="flex-1 font-medium">
+                      {{ direction.name }}
+                    </div>
+                    <button
+                      @click="renameDirection(direction)"
+                      class="w-9 h-9 rounded-lg bg-white dark:bg-slate-900 flex items-center justify-center"
+                      title="Переименовать"
+                    >
+                      ✏️
+                    </button>
+                    <button
+                      @click="deleteDirection(direction)"
+                      class="w-9 h-9 rounded-lg bg-white dark:bg-slate-900 flex items-center justify-center text-red-500"
+                      title="Удалить"
+                    >
+                      🗑️
+                    </button>
+                  </div>
+                </div>
+              </SettingsSection>
+
+
+              <!-- SCHOOLS -->
+              <SettingsSection
+                title="Школы"
+                icon="fa-solid fa-school"
+              >
+
+                <button
+                  @click="openSchoolModal()"
+                  class="w-full py-2.5 rounded-xl bg-blue-600 text-white text-sm font-medium mb-3"
+                >
+                  + Добавить школу
+                </button>
+
+                <div
+                  v-if="!schools.length"
+                  class="text-sm text-slate-400 text-center py-3"
+                >
+                  Школ пока нет
+                </div>
+
+                <div class="space-y-2">
+                  <div
+                    v-for="school in schools"
+                    :key="school.id"
+                    class="flex items-center gap-2 p-3 rounded-xl bg-slate-50 dark:bg-slate-950"
+                    :class="school.archived ? 'opacity-50' : ''"
+                  >
+
+                    <div class="flex-1">
+                      <div class="font-medium">
+                        {{ school.name }}
+                      </div>
+
+                      <div
+                        v-if="school.archived"
+                        class="text-[11px] text-slate-400"
+                      >
+                        Архив
+                      </div>
+                    </div>
+
+                    <button
+                      @click="openSchoolModal(school)"
+                      class="w-9 h-9 rounded-lg bg-white dark:bg-slate-900 flex items-center justify-center"
+                      title="Редактировать"
+                    >
+                      ✏️
+                    </button>
+
+                    <button
+                      v-if="!school.archived"
+                      @click="archiveSchool(school)"
+                      class="w-9 h-9 rounded-lg bg-white dark:bg-slate-900 flex items-center justify-center"
+                      title="Архивировать"
+                    >
+                      🗄️
+                    </button>
+
+                    <button
+                      v-else
+                      @click="restoreSchool(school)"
+                      class="w-9 h-9 rounded-lg bg-white dark:bg-slate-900 flex items-center justify-center"
+                      title="Восстановить"
+                    >
+                      ↩️
+                    </button>
+
+                    <button
+                      @click="deleteSchool(school)"
+                      class="w-9 h-9 rounded-lg bg-white dark:bg-slate-900 flex items-center justify-center text-red-500"
+                      title="Удалить"
+                    >
+                      🗑️
+                    </button>
+
+                  </div>
+                </div>
+
+              </SettingsSection>
+
+
+              <!-- GROUPS -->
+              <SettingsSection
+                title="Группы / ученики"
+                icon="fa-solid fa-users"
+              >
+
+                <button
+                  @click="openGroupModal()"
+                  class="w-full py-2.5 rounded-xl bg-blue-600 text-white text-sm font-medium mb-3"
+                >
+                  + Добавить группу
+                </button>
+
+                <div
+                  v-if="!groups.length"
+                  class="text-sm text-slate-400 text-center py-3"
+                >
+                  Групп пока нет
+                </div>
+
+                <div class="space-y-2">
+
+                  <div
+                    v-for="group in groups"
+                    :key="group.id"
+                    class="p-3 rounded-xl bg-slate-50 dark:bg-slate-950"
+                    :class="group.archived ? 'opacity-50' : ''"
+                  >
+
+                    <div class="flex items-center gap-2">
+
+                      <div class="flex-1">
+                        <div class="font-medium">
+                          {{ group.name }}
+                        </div>
+
+                        <div class="text-[11px] text-slate-400">
+                          {{ group.schoolId
+                            ? getSchoolName(group.schoolId)
+                            : 'Без школы'
+                          }}
+                          <span v-if="group.archived"> · Архив</span>
+                        </div>
+                      </div>
+
+                      <button
+                        @click="openGroupModal(group)"
+                        class="w-9 h-9 rounded-lg bg-white dark:bg-slate-900 flex items-center justify-center"
+                        title="Редактировать"
+                      >
+                        ✏️
+                      </button>
+
+                      <button
+                        v-if="!group.archived"
+                        @click="archiveGroup(group)"
+                        class="w-9 h-9 rounded-lg bg-white dark:bg-slate-900 flex items-center justify-center"
+                        title="Архивировать"
+                      >
+                        🗄️
+                      </button>
+
+                      <button
+                        v-else
+                        @click="restoreGroup(group)"
+                        class="w-9 h-9 rounded-lg bg-white dark:bg-slate-900 flex items-center justify-center"
+                        title="Восстановить"
+                      >
+                        ↩️
+                      </button>
+
+                      <button
+                        @click="deleteGroup(group)"
+                        class="w-9 h-9 rounded-lg bg-white dark:bg-slate-900 flex items-center justify-center text-red-500"
+                        title="Удалить"
+                      >
+                        🗑️
+                      </button>
+
+                    </div>
+
+                  </div>
+
+                </div>
+
+              </SettingsSection>
+
+
+              <!-- PAYMENT TYPES -->
+              <SettingsSection
+                title="Оплата"
+                icon="fa-solid fa-money-bill-wave"
+              >
+
+                <div class="space-y-2">
+
+                  <div
+                    v-for="type in types"
+                    :key="type.id"
+                    class="p-3 rounded-xl bg-slate-50 dark:bg-slate-950 flex items-center gap-3"
+                  >
+
+                    <div class="flex-1">
+                      <div class="font-medium">
+                        {{ type.name }}
+                      </div>
+
+                      <div class="text-[11px] text-slate-400 mt-0.5">
+                        <span v-if="type.mode === 'fixed'">
+                          Фиксированная сумма
+                        </span>
+
+                        <span v-else-if="type.mode === 'per_person'">
+                          За человека
+                        </span>
+
+                        <span v-else-if="type.mode === 'ranges'">
+                          По количеству людей
+                        </span>
+
+                        <span v-else>
+                          Вручную
+                        </span>
+                      </div>
+                    </div>
+
+                    <button
+                      @click="openTypeModal(type)"
+                      class="w-9 h-9 rounded-lg bg-white dark:bg-slate-900 flex items-center justify-center"
+                    >
+                      ✏️
+                    </button>
+
+                  </div>
+
+                </div>
+
+                <div class="mt-3 text-[11px] text-slate-400">
+                  При создании занятия сумма подставляется автоматически,
+                  но её можно изменить вручную.
+                </div>
+
+              </SettingsSection>
+
+
+              <!-- BACKUP -->
+              <SettingsSection
+                title="Данные"
+                icon="fa-solid fa-database"
+              >
+
+                <div class="space-y-2">
+
+                  <button
+                    @click="exportData"
+                    class="w-full py-3 rounded-xl bg-slate-100 dark:bg-slate-800 text-sm font-medium"
+                  >
+                    <i class="fa-solid fa-download mr-2"></i>
+                    Экспортировать резервную копию
+                  </button>
+
+                  <label
+                    class="block w-full py-3 rounded-xl bg-slate-100 dark:bg-slate-800 text-sm font-medium text-center cursor-pointer"
+                  >
+                    <i class="fa-solid fa-upload mr-2"></i>
+                    Импортировать резервную копию
+
+                    <input
+                      type="file"
+                      accept=".json,application/json"
+                      @change="importData"
+                      class="hidden"
+                    >
+                  </label>
+
+                  <button
+                    @click="resetAllData"
+                    class="w-full py-3 rounded-xl bg-red-50 dark:bg-red-950/30 text-red-600 dark:text-red-400 text-sm font-medium"
+                  >
+                    Удалить все данные
+                  </button>
+
+                </div>
+
+              </SettingsSection>
+
+            </div>
+
+          </section>
+
+        </main>
+
+
+        <!-- BOTTOM NAV -->
+        <nav
+          class="fixed bottom-0 left-0 right-0 z-40 bg-white/95 dark:bg-slate-900/95 backdrop-blur border-t border-slate-200 dark:border-slate-800 safe-bottom"
+        >
+          <div class="mx-auto max-w-md grid grid-cols-5 h-16">
+
+            <button
+              @click="switchView('today')"
+              class="flex flex-col items-center justify-center gap-1 text-[10px]"
+              :class="view === 'today'
+                ? 'text-blue-600 dark:text-blue-400 font-semibold'
+                : 'text-slate-400'"
+            >
+              <span class="text-base">🏠</span>
+              Сегодня
+            </button>
+
+            <button
+              @click="switchView('calendar')"
+              class="flex flex-col items-center justify-center gap-1 text-[10px]"
+              :class="view === 'calendar'
+                ? 'text-blue-600 dark:text-blue-400 font-semibold'
+                : 'text-slate-400'"
+            >
+              <span class="text-base">📅</span>
+              Календарь
+            </button>
+
+            <button
+              @click="openAddLesson(todayISO()); switchView('add')"
+              class="flex flex-col items-center justify-center gap-1 text-[10px]"
+              :class="view === 'add'
+                ? 'text-blue-600 dark:text-blue-400 font-semibold'
+                : 'text-slate-400'"
+            >
+              <span
+                class="w-9 h-9 -mt-5 rounded-full bg-blue-600 text-white flex items-center justify-center text-xl shadow-lg"
+              >
+                +
+              </span>
+              Добавить
+            </button>
+
+            <button
+              @click="switchView('finance')"
+              class="flex flex-col items-center justify-center gap-1 text-[10px]"
+              :class="view === 'finance'
+                ? 'text-blue-600 dark:text-blue-400 font-semibold'
+                : 'text-slate-400'"
+            >
+              <span class="text-base">💰</span>
+              Финансы
+            </button>
+
+            <button
+              @click="switchView('settings')"
+              class="flex flex-col items-center justify-center gap-1 text-[10px]"
+              :class="view === 'settings'
+                ? 'text-blue-600 dark:text-blue-400 font-semibold'
+                : 'text-slate-400'"
+            >
+              <span class="text-base">⚙️</span>
+              Настройки
+            </button>
+
+          </div>
+        </nav>
+
+
+        <!-- LESSON MODAL -->
+        <transition name="fade">
+
+          <div
+            v-if="showLessonModal"
+            class="fixed inset-0 z-50 bg-black/50 flex items-end justify-center"
+            @click.self="closeLessonModal"
+          >
+
+            <div
+              class="w-full max-w-md max-h-[92vh] overflow-y-auto bg-white dark:bg-slate-900 rounded-t-3xl p-4"
+            >
+
+              <div class="flex items-center justify-between mb-4">
+
+                <div>
+                  <h2 class="text-xl font-bold">
+                    {{ editingLesson ? 'Редактировать занятие' : 'Новое занятие' }}
+                  </h2>
+
+                  <div class="text-xs text-slate-400 mt-1">
+                    {{ lessonForm.date }}
+                  </div>
+                </div>
+
+                <button
+                  @click="closeLessonModal"
+                  class="w-10 h-10 rounded-xl bg-slate-100 dark:bg-slate-800 flex items-center justify-center text-lg"
+                >
+                  ×
+                </button>
+
+              </div>
+
+              <div class="space-y-4">
+
+                <FormField label="Дата">
+                  <input
+                    v-model="lessonForm.date"
+                    type="date"
+                    class="w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-950 px-3 py-2.5"
+                  >
+                </FormField>
+
+                <div class="grid grid-cols-2 gap-3">
+
+                  <FormField label="Начало">
+                    <input
+                      v-model="lessonForm.start"
+                      type="time"
+                      class="w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-950 px-3 py-2.5"
+                    >
+                  </FormField>
+
+                  <FormField label="Конец">
+                    <input
+                      v-model="lessonForm.end"
+                      type="time"
+                      class="w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-950 px-3 py-2.5"
+                    >
+                  </FormField>
+
+                </div>
+
+                <FormField label="Тип занятия">
+                  <select
+                    v-model="lessonForm.type"
+                    class="w-full rounded-xl border-2 border-blue-500 bg-blue-50/20 dark:bg-blue-950/20 px-3 py-2.5 font-semibold text-blue-600 dark:text-blue-400"
+                  >
+                    <option
+                      v-for="type in types"
+                      :key="type.id"
+                      :value="type.id"
+                    >
+                      {{ type.name }}
+                    </option>
+                  </select>
+                </FormField>
+
+                <FormField
+                  v-if="lessonForm.type === 'other'"
+                  label="Что именно?"
+                >
+                  <input
+                    v-model="lessonForm.otherText"
+                    type="text"
+                    placeholder="Напиши, что это"
+                    class="w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-950 px-3 py-2.5"
+                  >
+                </FormField>
+
+                <!-- БЛОК ДАННЫХ ИНДИВА В МОДАЛЬНОМ ОКНЕ -->
+                <div
+                  v-if="lessonForm.type === 'individual'"
+                  class="space-y-3 p-3.5 rounded-2xl bg-blue-50/80 dark:bg-blue-950/40 border border-blue-200 dark:border-blue-800"
+                >
+                  <div class="text-xs font-bold uppercase tracking-wider text-blue-700 dark:text-blue-300">
+                    ✨ Данные индива
+                  </div>
+
+                  <FormField label="Имя ученика">
+                    <input
+                      v-model="lessonForm.studentName"
+                      type="text"
+                      placeholder="Введите имя ученика"
+                      class="w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 px-3 py-2.5"
+                    >
+                  </FormField>
+
+                  <FormField label="Направление">
+                    <select
+                      v-model="lessonForm.directionId"
+                      class="w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 px-3 py-2.5"
+                    >
+                      <option value="">Не указано</option>
+                      <option
+                        v-for="direction in directions"
+                        :key="direction.id"
+                        :value="direction.id"
+                      >
+                        {{ direction.name }}
+                      </option>
+                    </select>
+                    <div
+                      v-if="!directions.length"
+                      class="text-[11px] text-amber-600 dark:text-amber-400 mt-1"
+                    >
+                      ⚠️ Направления ещё не созданы. Добавьте их во вкладке Настройки → Направления.
+                    </div>
+                  </FormField>
+                </div>
+
+                <FormField label="Школа">
+                  <select
+                    v-model="lessonForm.schoolId"
+                    class="w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-950 px-3 py-2.5"
+                  >
+                    <option value="">
+                      Без школы
+                    </option>
+
+                    <option
+                      v-for="school in activeSchools"
+                      :key="school.id"
+                      :value="school.id"
+                    >
+                      {{ school.name }}
+                    </option>
+                  </select>
+                </FormField>
+
+                <FormField
+                  v-if="lessonForm.type !== 'individual'"
+                  label="Группа / ученик"
+                >
+                  <select
+                    v-model="lessonForm.groupId"
+                    class="w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-950 px-3 py-2.5"
+                  >
+                    <option value="">
+                      Не указано
+                    </option>
+
+                    <option
+                      v-for="group in currentSchoolGroups"
+                      :key="group.id"
+                      :value="group.id"
+                    >
+                      {{ group.name }}
+                    </option>
+                  </select>
+                </FormField>
+
+                <div
+                  v-if="lessonForm.type !== 'individual'"
+                >
+                  <label class="block text-xs font-medium text-slate-500 dark:text-slate-400 mb-1.5">
+                    Количество людей
+                  </label>
+
+                  <div class="flex items-center gap-2">
+
+                    <button
+                      @click="changePeople(-1)"
+                      type="button"
+                      class="w-11 h-11 rounded-xl bg-slate-100 dark:bg-slate-800 text-lg"
+                    >
+                      −
+                    </button>
+
+                    <div
+                      class="flex-1 h-11 rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-700 flex items-center justify-center font-semibold"
+                    >
+                      {{ lessonForm.people }}
+                    </div>
+
+                    <button
+                      @click="changePeople(1)"
+                      type="button"
+                      class="w-11 h-11 rounded-xl bg-slate-100 dark:bg-slate-800 text-lg"
+                    >
+                      +
+                    </button>
+
+                  </div>
+                </div>
+
+                <PaymentEditor
+                  v-model="lessonForm.payment"
+                  v-model:manual="lessonForm.paymentManual"
+                  :calculated="calculatedPayment"
+                  :currency="currency"
+                />
+
+                <FormField label="Статус">
+                  <select
+                    v-model="lessonForm.status"
+                    class="w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-950 px-3 py-2.5"
+                  >
+                    <option value="planned">
+                      Запланировано
+                    </option>
+
+                    <option value="done">
+                      Проведено
+                    </option>
+
+                    <option value="cancelled">
+                      Отменено
+                    </option>
+                  </select>
+                </FormField>
+
+                <FormField label="Заметка">
+                  <textarea
+                    v-model="lessonForm.note"
+                    rows="3"
+                    placeholder="Дополнительная информация"
+                    class="w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-950 px-3 py-2.5 resize-none"
+                  ></textarea>
+                </FormField>
+
+                <div class="grid grid-cols-2 gap-2 pt-1">
+
+                  <button
+                    @click="closeLessonModal"
+                    class="py-3 rounded-xl bg-slate-100 dark:bg-slate-800 font-medium"
+                  >
+                    Отмена
+                  </button>
+
+                  <button
+                    @click="saveLesson"
+                    class="py-3 rounded-xl bg-blue-600 text-white font-semibold"
+                  >
+                    Сохранить
+                  </button>
+
+                </div>
+
+              </div>
+
+            </div>
+
+          </div>
+
+        </transition>
+
+
+        <!-- SCHOOL MODAL -->
+        <transition name="fade">
+
+          <div
+            v-if="showSchoolModal"
+            class="fixed inset-0 z-[60] bg-black/50 flex items-end justify-center"
+            @click.self="showSchoolModal = false"
+          >
+
+            <div
+              class="w-full max-w-md bg-white dark:bg-slate-900 rounded-t-3xl p-4"
+            >
+
+              <div class="flex items-center justify-between mb-4">
+                <h2 class="text-xl font-bold">
+                  {{ schoolForm.id ? 'Редактировать школу' : 'Новая школа' }}
+                </h2>
+
+                <button
+                  @click="showSchoolModal = false"
+                  class="w-10 h-10 rounded-xl bg-slate-100 dark:bg-slate-800 flex items-center justify-center text-lg"
+                >
+                  ×
+                </button>
+              </div>
+
+              <label class="text-xs text-slate-500">
+                Название
+              </label>
+
+              <input
+                v-model="schoolForm.name"
+                type="text"
+                placeholder="Название школы"
+                class="mt-1 w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-950 px-3 py-2.5"
+              >
+
+              <button
+                @click="saveSchool"
+                class="mt-4 w-full py-3 rounded-xl bg-blue-600 text-white font-semibold"
+              >
+                Сохранить
+              </button>
+
+            </div>
+
+          </div>
+
+        </transition>
+
+
+        <!-- GROUP MODAL -->
+        <transition name="fade">
+
+          <div
+            v-if="showGroupModal"
+            class="fixed inset-0 z-[60] bg-black/50 flex items-end justify-center"
+            @click.self="showGroupModal = false"
+          >
+
+            <div
+              class="w-full max-w-md max-h-[90vh] overflow-y-auto bg-white dark:bg-slate-900 rounded-t-3xl p-4"
+            >
+
+              <div class="flex items-center justify-between mb-4">
+                <h2 class="text-xl font-bold">
+                  {{ groupForm.id ? 'Редактировать группу' : 'Новая группа' }}
+                </h2>
+
+                <button
+                  @click="showGroupModal = false"
+                  class="w-10 h-10 rounded-xl bg-slate-100 dark:bg-slate-800 flex items-center justify-center text-lg"
+                >
+                  ×
+                </button>
+              </div>
+
+              <div class="space-y-4">
+
+                <div>
+                  <label class="text-xs text-slate-500">
+                    Название
+                  </label>
+
+                  <input
+                    v-model="groupForm.name"
+                    type="text"
+                    placeholder="Название группы / ученика"
+                    class="mt-1 w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-950 px-3 py-2.5"
+                  >
+                </div>
+
+                <div>
+                  <label class="text-xs text-slate-500">
+                    Школа
+                  </label>
+
+                  <select
+                    v-model="groupForm.schoolId"
+                    class="mt-1 w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-950 px-3 py-2.5"
+                  >
+                    <option value="">
+                      Без школы
+                    </option>
+
+                    <option
+                      v-for="school in activeSchools"
+                      :key="school.id"
+                      :value="school.id"
+                    >
+                      {{ school.name }}
+                    </option>
+                  </select>
+                </div>
+
+                <div
+                  class="border-t border-slate-100 dark:border-slate-800 pt-4"
+                >
+
+                  <div class="font-semibold text-sm mb-1">
+                    Своя оплата группы
+                  </div>
+
+                  <div class="text-xs text-slate-400 mb-3">
+                    Если задать правило здесь, оно будет иметь приоритет
+                    над правилом школы и типа занятия.
+                  </div>
+
+                  <select
+                    :value="groupForm.customRule?.mode || 'none'"
+                    @change="
+                      groupForm.customRule =
+                        $event.target.value === 'none'
+                          ? null
+                          : {
+                              mode: $event.target.value,
+                              amount: 0,
+                              minPayment: 0,
+                              ranges: []
+                            }
+                    "
+                    class="w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-950 px-3 py-2.5"
+                  >
+                    <option value="none">
+                      Использовать общее правило
+                    </option>
+
+                    <option value="fixed">
+                      Фиксированная сумма
+                    </option>
+
+                    <option value="per_person">
+                      За человека
+                    </option>
+
+                    <option value="ranges">
+                      По количеству людей
+                    </option>
+
+                    <option value="manual">
+                      Вручную
+                    </option>
+                  </select>
+
+                  <div
+                    v-if="groupForm.customRule && groupForm.customRule.mode !== 'manual'"
+                    class="mt-3 space-y-3"
+                  >
+
+                    <div
+                      v-if="groupForm.customRule.mode === 'fixed' ||
+                        groupForm.customRule.mode === 'per_person'"
+                    >
+                      <label class="text-xs text-slate-500">
+                        {{ groupForm.customRule.mode === 'fixed'
+                          ? 'Сумма'
+                          : 'Сумма за человека'
+                        }}
+                      </label>
+
+                      <input
+                        v-model.number="groupForm.customRule.amount"
+                        type="number"
+                        min="0"
+                        class="mt-1 w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-950 px-3 py-2.5"
+                      >
+                    </div>
+
+                    <div
+                      v-if="groupForm.customRule.mode === 'ranges'"
+                    >
+
+                      <div
+                        v-for="(range, index) in groupForm.customRule.ranges"
+                        :key="range.id || index"
+                        class="grid grid-cols-[1fr_1fr_1.2fr_auto] gap-1.5 mb-2"
+                      >
+
+                        <input
+                          v-model.number="range.min"
+                          type="number"
+                          min="1"
+                          placeholder="От"
+                          class="min-w-0 rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-950 px-2 py-2 text-sm"
+                        >
+
+                        <input
+                          v-model="range.max"
+                          type="number"
+                          min="1"
+                          placeholder="До"
+                          class="min-w-0 rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-950 px-2 py-2 text-sm"
+                        >
+
+                        <input
+                          v-model.number="range.amount"
+                          type="number"
+                          min="0"
+                          placeholder="Сумма"
+                          class="min-w-0 rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-950 px-2 py-2 text-sm"
+                        >
+
+                        <button
+                          @click="groupForm.customRule.ranges.splice(index, 1)"
+                          class="w-9 rounded-lg bg-red-50 dark:bg-red-950/30 text-red-500 flex items-center justify-center"
+                        >
+                          ×
+                        </button>
+
+                      </div>
+
+                      <button
+                        @click="
+                          groupForm.customRule.ranges.push({
+                            id: Date.now() + Math.random(),
+                            min: 1,
+                            max: '',
+                            amount: 0
+                          })
+                        "
+                        class="text-xs text-blue-600 dark:text-blue-400 font-medium"
+                      >
+                        + Добавить диапазон
+                      </button>
+
+                    </div>
+
+                    <div
+                      v-if="groupForm.customRule.mode !== 'manual'"
+                    >
+                      <label class="text-xs text-slate-500">
+                        Минимальная оплата
+                      </label>
+
+                      <input
+                        v-model.number="groupForm.customRule.minPayment"
+                        type="number"
+                        min="0"
+                        class="mt-1 w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-950 px-3 py-2.5"
+                      >
+                    </div>
+
+                  </div>
+
+                </div>
+
+                <button
+                  @click="saveGroup"
+                  class="w-full py-3 rounded-xl bg-blue-600 text-white font-semibold"
+                >
+                  Сохранить
+                </button>
+
+              </div>
+
+            </div>
+
+          </div>
+
+        </transition>
+
+
+        <!-- TYPE MODAL -->
+        <transition name="fade">
+
+          <div
+            v-if="showTypeModal"
+            class="fixed inset-0 z-[70] bg-black/50 flex items-end justify-center"
+            @click.self="showTypeModal = false"
+          >
+
+            <div
+              class="w-full max-w-md max-h-[92vh] overflow-y-auto bg-white dark:bg-slate-900 rounded-t-3xl p-4"
+            >
+
+              <div class="flex items-center justify-between mb-4">
+                <h2 class="text-xl font-bold">
+                  {{ typeForm.name }}
+                </h2>
+
+                <button
+                  @click="showTypeModal = false"
+                  class="w-10 h-10 rounded-xl bg-slate-100 dark:bg-slate-800 flex items-center justify-center text-lg"
+                >
+                  ×
+                </button>
+              </div>
+
+              <div class="space-y-4">
+
+                <div>
+                  <label class="text-xs text-slate-500">
+                    Название
+                  </label>
+
+                  <input
+                    v-model="typeForm.name"
+                    type="text"
+                    class="mt-1 w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-950 px-3 py-2.5"
+                  >
+                </div>
+
+                <div>
+                  <label class="text-xs text-slate-500">
+                    Способ расчёта
+                  </label>
+
+                  <select
+                    v-model="typeForm.mode"
+                    class="mt-1 w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-950 px-3 py-2.5"
+                  >
+                    <option value="fixed">
+                      Фиксированная сумма
+                    </option>
+
+                    <option value="per_person">
+                      За человека
+                    </option>
+
+                    <option value="ranges">
+                      По количеству людей
+                    </option>
+
+                    <option value="manual">
+                      Вручную
+                    </option>
+                  </select>
+                </div>
+
+                <div
+                  v-if="typeForm.mode === 'fixed' ||
+                    typeForm.mode === 'per_person'"
+                >
+                  <label class="text-xs text-slate-500">
+                    {{ typeForm.mode === 'fixed'
+                      ? 'Сумма'
+                      : 'Сумма за человека'
+                    }}
+                  </label>
+
+                  <input
+                    v-model.number="typeForm.amount"
+                    type="number"
+                    min="0"
+                    class="mt-1 w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-950 px-3 py-2.5"
+                  >
+                </div>
+
+                <div
+                  v-if="typeForm.mode === 'ranges'"
+                >
+
+                  <div class="font-medium text-sm mb-2">
+                    Диапазоны
+                  </div>
+
+                  <div
+                    v-for="(range, index) in typeForm.ranges"
+                    :key="range.id || index"
+                    class="grid grid-cols-[1fr_1fr_1.2fr_auto] gap-1.5 mb-2"
+                  >
+
+                    <input
+                      v-model.number="range.min"
+                      type="number"
+                      min="1"
+                      placeholder="От"
+                      class="min-w-0 rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-950 px-2 py-2 text-sm"
+                    >
+
+                    <input
+                      v-model="range.max"
+                      type="number"
+                      min="1"
+                      placeholder="До"
+                      class="min-w-0 rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-950 px-2 py-2 text-sm"
+                    >
+
+                    <input
+                      v-model.number="range.amount"
+                      type="number"
+                      min="0"
+                      placeholder="Сумма"
+                      class="min-w-0 rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-950 px-2 py-2 text-sm"
+                    >
+
+                    <button
+                      @click="removeRange(index)"
+                      class="w-9 rounded-lg bg-red-50 dark:bg-red-950/30 text-red-500 flex items-center justify-center"
+                    >
+                      ×
+                    </button>
+
+                  </div>
+
+                  <button
+                    @click="addRange"
+                    class="text-xs text-blue-600 dark:text-blue-400 font-medium"
+                  >
+                    + Добавить диапазон
+                  </button>
+
+                </div>
+
+                <div
+                  v-if="typeForm.mode !== 'manual'"
+                >
+                  <label class="text-xs text-slate-500">
+                    Минимальная оплата
+                  </label>
+
+                  <input
+                    v-model.number="typeForm.minPayment"
+                    type="number"
+                    min="0"
+                    class="mt-1 w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-950 px-3 py-2.5"
+                  >
+                </div>
+
+                <button
+                  @click="saveType"
+                  class="w-full py-3 rounded-xl bg-blue-600 text-white font-semibold"
+                >
+                  Сохранить
+                </button>
+
+              </div>
+
+            </div>
+
+          </div>
+
+        </transition>
+
+      </div>
+    </div>
+  `
+}).mount('#app');
+</script>
+
+</body>
+</html>
